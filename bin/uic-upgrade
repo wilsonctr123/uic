@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# uic-upgrade — pull latest from GitHub, rebuild, reinstall skills
+set -euo pipefail
+
+UIC_DIR="${UIC_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+STATE_DIR="${UIC_STATE_DIR:-$HOME/.uic-state}"
+VERSION_FILE="$UIC_DIR/VERSION"
+
+mkdir -p "$STATE_DIR"
+
+# Save current version for the just-upgraded marker
+OLD_VER=$(cat "$VERSION_FILE" 2>/dev/null || echo "unknown")
+
+echo "🔄 Upgrading UIC from $OLD_VER..."
+echo ""
+
+# Pull latest
+cd "$UIC_DIR"
+git pull origin main 2>&1
+
+# Rebuild
+echo ""
+echo "Building..."
+npm install --silent 2>/dev/null
+npm run build --silent 2>/dev/null
+
+NEW_VER=$(cat "$VERSION_FILE" 2>/dev/null || echo "unknown")
+
+# Reinstall global skills
+SKILLS_DIR="$HOME/.claude/skills"
+if [ -d "$SKILLS_DIR" ]; then
+  echo ""
+  echo "Updating global skills..."
+  for skill_dir in "$UIC_DIR"/global-skills/*/; do
+    skill_name=$(basename "$skill_dir")
+    mkdir -p "$SKILLS_DIR/$skill_name"
+    cp -r "$skill_dir"* "$SKILLS_DIR/$skill_name/"
+  done
+  chmod +x "$SKILLS_DIR/uic/bin/find-uic.sh" 2>/dev/null || true
+  echo "  ✅ 12 skills updated"
+fi
+
+# Leave marker for next session
+echo "$OLD_VER" > "$STATE_DIR/just-upgraded-from"
+
+echo ""
+echo "✅ UIC upgraded: $OLD_VER → $NEW_VER"

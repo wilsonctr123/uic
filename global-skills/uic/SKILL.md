@@ -18,6 +18,28 @@ allowed-tools:
 
 # /uic — Browser-First UI Testing Pipeline
 
+## Update check (run first)
+
+```bash
+_UPD=$(~/.claude/skills/uic/bin/find-uic.sh)
+if [ -n "$_UPD" ]; then
+  UIC_DIR=$(dirname "$(dirname "$(echo $_UPD | sed 's/node //')")")
+  _CHECK=$("$UIC_DIR/bin/uic-update-check" 2>/dev/null || true)
+  [ -n "$_CHECK" ] && echo "$_CHECK" || true
+fi
+```
+
+If output shows `UPGRADE_AVAILABLE <old> <new>`: tell the user
+"UIC update available: v{old} → v{new}. Run `bash ~/.uic-tool/bin/uic-upgrade` to update,
+or I can do it now." Use AskUserQuestion with options:
+- A) Upgrade now
+- B) Skip for now
+
+If A: run the upgrade script, then continue with the pipeline.
+If `JUST_UPGRADED <old> <new>`: tell user "UIC v{new} (just updated!)" and continue.
+
+---
+
 Run the full UIC workflow end-to-end. Accepts a mode argument:
 - **bootstrap** (default if no contract exists): full first-time setup
 - **maintain** (default if contract exists): rediscover, update, retest
