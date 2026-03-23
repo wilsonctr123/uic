@@ -27,6 +27,19 @@ Built for AI coding agents (Claude Code, Copilot, Codex) and developers who need
 uic init | discover | contract gen|diff|update | test gen|run | optimize | gate | report | doctor
 ```
 
+## Requirements
+
+| Requirement | Version | Why |
+|------------|---------|-----|
+| **Node.js** | >= 18 | Runs the UIC CLI and Playwright |
+| **npm** | any | Installs dependencies |
+| **Git** | any | Clones the repo |
+| **Claude Code** | latest | For `/uic` slash commands (optional — CLI works without it) |
+
+UIC's own dependencies (`commander`, `playwright`, `typescript`) are installed automatically by `npm install`.
+
+Your project also needs `@playwright/test` as a dev dependency — the install steps below cover this.
+
 ## Install
 
 ### One-line install (recommended)
