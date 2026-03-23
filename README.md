@@ -29,22 +29,53 @@ uic init | discover | contract gen|diff|update | test gen|run | optimize | gate 
 
 ## Install
 
-### 1. Add to your project
+### One-line install (recommended)
 
 ```bash
-git clone https://github.com/wilsonctr123/uic.git tool/
-cd tool && npm install && npm run build && cd ..
-npm install -D @playwright/test
-npx playwright install chromium
+git clone https://github.com/wilsonctr123/uic.git ~/.uic-tool && ~/.uic-tool/install.sh
 ```
 
-### 2. Create config
+This installs:
+- **12 global Claude Code skills** (`/uic`, `/uic-discover`, etc.) — available in every project, every session
+- **UIC CLI** — built and ready at `~/.uic-tool/dist/cli.js`
+
+### Then in your webapp project:
 
 ```bash
+# Install Playwright (one time)
+npm install -D @playwright/test
+npx playwright install chromium
+
+# Init UIC config
+/uic-init
+
+# Set test credentials
+echo 'TEST_USER_EMAIL=test@example.com' >> .env
+echo 'TEST_USER_PASSWORD=secret123' >> .env
+
+# Run everything
+/uic
+```
+
+### Manual install (without global skills)
+
+If you prefer project-local instead of global:
+
+```bash
+# Clone into your project
+git clone https://github.com/wilsonctr123/uic.git tool/
+cd tool && npm install && npm run build && cd ..
+
+# Copy slash commands (project-local only)
+cp -r tool/claude-integration/commands/ .claude/commands/
+
+# Run
 node tool/dist/cli.js init
 ```
 
-This auto-detects your framework and generates `uic.config.ts`. Edit it:
+### Config
+
+`/uic-init` auto-detects your framework and generates `uic.config.ts`:
 
 ```typescript
 export default {
@@ -66,41 +97,6 @@ export default {
     seedRoutes: ['/', '/login', '/dashboard', '/settings'],
   },
 } satisfies UicConfig;
-```
-
-### 3. Set credentials
-
-Create `.env` (gitignored automatically):
-```
-TEST_USER_EMAIL=test@example.com
-TEST_USER_PASSWORD=secret123
-```
-
-### 4. Setup in Claude Code
-
-Copy the slash commands into your project:
-```bash
-cp -r tool/claude-integration/commands/ .claude/commands/
-cp -r tool/claude-integration/hooks/ .claude/hooks/
-cp tool/claude-integration/settings.example.json .claude/settings.json
-```
-
-Now you can use `/uic` and all 12 slash commands.
-
-### 5. Run
-
-```bash
-/uic
-```
-
-Or without Claude Code:
-```bash
-node tool/dist/cli.js discover
-node tool/dist/cli.js contract gen
-node tool/dist/cli.js test gen
-node tool/dist/cli.js test run
-node tool/dist/cli.js optimize
-node tool/dist/cli.js gate
 ```
 
 ## Example Run Output
