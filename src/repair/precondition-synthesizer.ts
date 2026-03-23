@@ -131,7 +131,7 @@ import fs from 'fs';
  * Imports test emails and creates test tasks so pages have data to display.
  */
 setup('seed test data', async ({ request }) => {
-  const baseUrl = 'http://localhost:5173';
+  const baseUrl = process.env.BASE_URL || 'http://localhost:3000';
 
   // Import test emails for search/pagination tests
   const fixtureDir = path.join(__dirname, 'data');
