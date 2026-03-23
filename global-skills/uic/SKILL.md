@@ -67,7 +67,14 @@ If no argument given:
 1. If no `uic.config.ts`, run `$UIC_BIN init` and report detected stack.
 2. Run `$UIC_BIN doctor` — if it fails, report what's missing and stop.
 3. Run `$UIC_BIN discover --persona user` — report route/element counts.
-4. Run `$UIC_BIN contract gen` — report surface/flow/invariant counts + ledger.
+4. **CRITICAL: Check discovery output for degradation warnings.**
+   After discover, read the output. If you see "DEGRADED DISCOVERY DETECTED":
+   - **STOP the pipeline immediately.**
+   - Tell the user exactly what's wrong (auth failed, backend dead, routes redirected).
+   - Tell them how to fix it (create .env, check startCommand, create test user).
+   - Do NOT proceed to contract gen with degraded data.
+   - Ask: "Fix these issues and re-run /uic, or continue with limited coverage?"
+5. Run `$UIC_BIN contract gen` — report surface/flow/invariant counts + ledger.
 5. Run `$UIC_BIN test gen` — report test file count.
 6. Run `$UIC_BIN test run` — report pass/fail counts.
 7. Run `$UIC_BIN optimize --iterations 3` — report repairs, pass rate.

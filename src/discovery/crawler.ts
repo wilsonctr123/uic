@@ -257,5 +257,38 @@ export async function discover(options: CrawlerOptions): Promise<UIInventory> {
   console.log(`   Inputs: ${inventory.summary.totalInputs}`);
   console.log(`   Links: ${inventory.summary.totalLinks}\n`);
 
+  // ── Degraded discovery detection ──
+  const seedCount = config.discovery.seedRoutes.length;
+  const lowConfidence = routes.filter(r => r.confidence === 'low');
+  const redirected = routes.filter(r => r.notes.some(n => n.includes('Redirected to')));
+  const authRoutes = routes.filter(r => r.requiresAuth);
+  const avgElements = routes.length > 0 ? allElements.length / routes.length : 0;
+
+  const warnings: string[] = [];
+
+  if (redirected.length > 0 && redirected.length >= authRoutes.length * 0.5) {
+    warnings.push(`${redirected.length} of ${authRoutes.length} auth-required routes redirected to login — credentials missing or invalid`);
+  }
+
+  if (lowConfidence.length > seedCount * 0.5) {
+    warnings.push(`${lowConfidence.length} of ${seedCount} seed routes have low confidence — most pages not reachable`);
+  }
+
+  if (seedCount > 3 && allElements.length < seedCount * 5) {
+    warnings.push(`Only ${allElements.length} elements found across ${seedCount} routes — expected ${seedCount * 10}+ for a real app`);
+  }
+
+  if (warnings.length > 0) {
+    console.log('⚠️  DEGRADED DISCOVERY DETECTED\n');
+    for (const w of warnings) {
+      console.log(`   ⚠ ${w}`);
+    }
+    console.log('');
+    console.log('   This will produce low-quality tests. To fix:');
+    console.log('   1. Create .env with TEST_USER_EMAIL and TEST_USER_PASSWORD');
+    console.log('   2. Ensure backend is running (check startCommand in uic.config.ts)');
+    console.log('   3. Re-run: /uic-discover\n');
+  }
+
   return inventory;
 }
