@@ -1,0 +1,24 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "TaskComplete",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ./tool/dist/cli.js gate 2>/dev/null || echo 'UIC gate: contract or results missing — run uic discover && uic test run && uic gate'",
+            "timeout": 30000
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(npx uic *)",
+      "Bash(npx playwright *)",
+      "Bash(node ./tool/dist/cli.js *)",
+      "Bash(cd web && npm run *)"
+    ]
+  }
+}

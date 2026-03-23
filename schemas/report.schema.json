@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoverageReport",
+  "description": "UIC coverage gate output — pass/fail with detailed issues",
+  "type": "object",
+  "required": ["timestamp", "passed", "strict", "summary", "issues"],
+  "properties": {
+    "timestamp": { "type": "string", "format": "date-time" },
+    "passed": { "type": "boolean" },
+    "strict": { "type": "boolean" },
+    "summary": {
+      "type": "object",
+      "required": ["errors", "warnings", "surfaces_total", "surfaces_tested", "surfaces_required", "flows_total", "flows_tested", "flows_required", "invariants_total", "invariants_tested"],
+      "properties": {
+        "errors": { "type": "integer" },
+        "warnings": { "type": "integer" },
+        "surfaces_total": { "type": "integer" },
+        "surfaces_tested": { "type": "integer" },
+        "surfaces_required": { "type": "integer" },
+        "flows_total": { "type": "integer" },
+        "flows_tested": { "type": "integer" },
+        "flows_required": { "type": "integer" },
+        "invariants_total": { "type": "integer" },
+        "invariants_tested": { "type": "integer" }
+      }
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "severity", "item", "message"],
+        "properties": {
+          "type": { "type": "string", "enum": ["missing_test", "missing_flow_test", "missing_invariant", "drift_new", "drift_removed", "drift_changed"] },
+          "severity": { "type": "string", "enum": ["error", "warning", "info"] },
+          "item": { "type": "string" },
+          "message": { "type": "string" }
+        }
+      }
+    }
+  }
+}

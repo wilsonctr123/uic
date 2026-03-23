@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.uic/auth/
+.uic/screenshots/
+test-results/
+.env
+*.tgz

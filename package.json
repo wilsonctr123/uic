@@ -1,0 +1,49 @@
+{
+  "name": "uic",
+  "version": "0.1.0",
+  "description": "Browser-first UI coverage enforcement. Discovery, contracts, tests, and gates for webapp UI verification.",
+  "type": "module",
+  "bin": {
+    "uic": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "lint": "tsc --noEmit",
+    "test": "node --test dist/**/*.test.js"
+  },
+  "keywords": [
+    "ui-testing",
+    "browser-testing",
+    "playwright",
+    "coverage",
+    "contract-testing",
+    "e2e",
+    "ui-contract",
+    "drift-detection"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "commander": "^13.0.0",
+    "playwright": "^1.50.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  },
+  "peerDependencies": {
+    "@playwright/test": ">=1.40.0"
+  },
+  "files": [
+    "dist/",
+    "schemas/",
+    "templates/",
+    "README.md",
+    "LICENSE"
+  ]
+}

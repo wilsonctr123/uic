@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UIInventory",
+  "description": "Discovery output from UIC browser crawl",
+  "type": "object",
+  "required": ["appName", "baseUrl", "discoveredAt", "discoveryMethod", "routes", "summary"],
+  "properties": {
+    "appName": { "type": "string" },
+    "baseUrl": { "type": "string", "format": "uri" },
+    "discoveredAt": { "type": "string", "format": "date-time" },
+    "discoveryMethod": { "type": "string", "enum": ["browser-crawl"] },
+    "config": {
+      "type": "object",
+      "properties": {
+        "framework": { "type": "string" },
+        "authStrategy": { "type": "string" }
+      }
+    },
+    "routes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "url", "title", "requiresAuth", "elements", "confidence", "discoveredAt"],
+        "properties": {
+          "path": { "type": "string" },
+          "url": { "type": "string" },
+          "title": { "type": "string" },
+          "requiresAuth": { "type": "boolean" },
+          "screenshot": { "type": "string" },
+          "elements": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["tag", "disabled", "visible", "selector", "classification"],
+              "properties": {
+                "tag": { "type": "string" },
+                "type": { "type": "string" },
+                "role": { "type": "string" },
+                "label": { "type": "string" },
+                "text": { "type": "string" },
+                "name": { "type": "string" },
+                "placeholder": { "type": "string" },
+                "href": { "type": "string" },
+                "disabled": { "type": "boolean" },
+                "visible": { "type": "boolean" },
+                "testId": { "type": "string" },
+                "selector": { "type": "string" },
+                "classification": {
+                  "type": "string",
+                  "enum": ["button", "link", "text-input", "password-input", "email-input", "search-input", "file-upload", "checkbox", "date-input", "textarea", "select", "table", "form", "tab", "dialog", "toggle", "menu", "other"]
+                }
+              }
+            }
+          },
+          "consoleErrors": { "type": "array", "items": { "type": "string" } },
+          "failedRequests": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "url": { "type": "string" },
+                "status": { "type": "integer" },
+                "method": { "type": "string" }
+              }
+            }
+          },
+          "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+          "discoveredAt": { "type": "string" },
+          "notes": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "properties": {
+        "totalRoutes": { "type": "integer" },
+        "totalElements": { "type": "integer" },
+        "totalButtons": { "type": "integer" },
+        "totalInputs": { "type": "integer" },
+        "totalLinks": { "type": "integer" },
+        "totalTables": { "type": "integer" },
+        "totalDialogs": { "type": "integer" },
+        "authRequired": { "type": "integer" },
+        "authNotRequired": { "type": "integer" },
+        "consoleErrorCount": { "type": "integer" },
+        "failedRequestCount": { "type": "integer" }
+      }
+    }
+  }
+}

@@ -1,0 +1,26 @@
+name: uic-codex-review
+description: |
+  Use OpenAI Codex to review the UIC contract and test coverage for completeness.
+  Provides a second opinion on whether the contract accurately captures the app's
+  critical UI surfaces and whether generated tests are sufficient.
+
+prompt: |
+  Review the following UIC artifacts for this webapp:
+
+  1. The UI inventory (discovered surfaces and elements)
+  2. The UI contract (required surfaces, flows, invariants)
+  3. The generated Playwright tests
+
+  Assess:
+  - Are critical user flows covered?
+  - Are any important interactive controls missing from the contract?
+  - Are the generated tests likely to catch real regressions?
+  - Are there any surfaces marked as required that shouldn't be?
+  - Are there any surfaces NOT marked as required that should be?
+  - Is the auth strategy appropriate for this app?
+
+  Provide a brief assessment with specific recommendations.
+
+tools:
+  - read
+  - bash

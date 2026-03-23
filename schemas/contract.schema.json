@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/uic/schemas/contract.schema.json",
+  "title": "UI Contract",
+  "description": "Machine-readable UI coverage contract defining required surfaces, flows, and invariants.",
+  "type": "object",
+  "required": ["version", "generatedAt", "app", "surfaces", "flows", "invariants"],
+  "properties": {
+    "version": { "type": "string", "const": "1.0" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "app": {
+      "type": "object",
+      "required": ["name", "baseUrl"],
+      "properties": {
+        "name": { "type": "string" },
+        "baseUrl": { "type": "string", "format": "uri" },
+        "framework": { "type": "string" }
+      }
+    },
+    "surfaces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "route", "persona", "viewport", "state", "checkpoint", "expectations", "policy", "metadata"],
+        "properties": {
+          "id": { "type": "string", "description": "Unique surface ID: route|persona|viewport|state" },
+          "route": { "type": "string" },
+          "persona": { "type": "string", "enum": ["guest", "user", "admin"] },
+          "viewport": { "type": "string", "enum": ["desktop", "mobile"] },
+          "state": { "type": "string", "enum": ["initial", "empty", "loaded", "error"] },
+          "checkpoint": { "type": "string" },
+          "expectations": {
+            "type": "object",
+            "properties": {
+              "required_elements": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "role": { "type": "string" },
+                    "name": { "type": "string" },
+                    "selector": { "type": "string" },
+                    "required": { "type": "boolean" },
+                    "note": { "type": "string" }
+                  }
+                }
+              },
+              "forbidden_elements": { "type": "array", "items": { "type": "string" } },
+              "no_console_errors": { "type": "boolean" },
+              "no_failed_requests": { "type": "boolean" },
+              "navigation_works": { "type": "boolean" },
+              "visual_snapshot": { "type": "boolean" }
+            }
+          },
+          "policy": {
+            "type": "object",
+            "required": ["required", "severity"],
+            "properties": {
+              "required": { "type": "boolean" },
+              "severity": { "type": "string", "enum": ["blocking", "warning", "info"] },
+              "owner": { "type": "string" },
+              "rationale": { "type": "string" }
+            }
+          },
+          "metadata": {
+            "type": "object",
+            "required": ["discovered_at", "last_seen", "source", "status"],
+            "properties": {
+              "discovered_at": { "type": "string" },
+              "last_seen": { "type": "string" },
+              "source": { "type": "string", "enum": ["auto-discovery", "manual", "template"] },
+              "status": { "type": "string", "enum": ["active", "removed", "unreachable", "changed"] }
+            }
+          }
+        }
+      }
+    },
+    "flows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "steps", "required", "persona"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "steps": { "type": "array", "items": { "type": "string" } },
+          "required": { "type": "boolean" },
+          "persona": { "type": "string" },
+          "status": { "type": "string", "enum": ["active", "removed", "unreachable"] }
+        }
+      }
+    },
+    "invariants": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "required"],
+        "properties": {
+          "name": { "type": "string" },
+          "required": { "type": "boolean" },
+          "description": { "type": "string" }
+        }
+      }
+    },
+    "exclusions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["pattern", "reason"],
+        "properties": {
+          "pattern": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      }
+    }
+  }
+}
