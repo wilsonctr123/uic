@@ -9,7 +9,7 @@
  * Informational affordances get visibility checks (separate from interaction tests).
  */
 
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Affordance, AffordanceLedger, UicConfig, ActionType, OracleType } from '../config/types.js';
 import { getWidgetAdapter } from './adapters.js';
@@ -52,12 +52,16 @@ function makeLocator(aff: Affordance): string {
     }
     return `page.getByText(/${escaped}/i)`;
   }
-  // Fallback: use selector if it's specific enough
-  if (aff.target.selector && !isBareOrAmbiguous(aff.target.selector)) {
+  // Fallback: use selector only if it's an ID or data-testid that is specific
+  if (aff.target.selector && /^#[a-zA-Z][\w-]+$/.test(aff.target.selector)) {
     return `page.locator('${aff.target.selector}')`;
   }
-  // Last resort: bare selector with .first() to avoid strict mode
-  return `page.locator('${aff.target.selector}').first()`;
+  // Last resort: use aria label or text content with .first()
+  if (aff.label) {
+    return `page.getByText('${escapeRegex(aff.label)}').first()`;
+  }
+  // No reliable locator — mark as blocked
+  return `page.locator('[data-testid="blocked-no-locator"]') /* NO RELIABLE LOCATOR: ${(aff.target.selector || 'unknown').replace(/'/g, '')} */`;
 }
 
 // ── Action code generation ──
@@ -72,11 +76,18 @@ function generateAction(aff: Affordance, locator: string): string {
       return `    await ${locator}.click();`;
 
     case 'fill': {
-      const value = aff.elementType === 'input' && aff.target.placeholder?.includes('password')
-        ? 'TestPassword123!'
-        : aff.elementType === 'input' && aff.target.placeholder?.includes('@')
-          ? 'test@example.com'
-          : 'test input value';
+      const ph = (aff.target.placeholder || '').toLowerCase();
+      const label = (aff.label || '').toLowerCase();
+      let value = 'quarterly budget planning documents';
+      if (ph.includes('password') || label.includes('password')) value = 'TestPassword123!';
+      else if (ph.includes('@') || ph.includes('email') || label.includes('email')) value = 'test@example.com';
+      else if (ph.includes('search') || ph.includes('ask') || ph.includes('query')) value = 'quarterly budget planning documents';
+      else if (ph.includes('title') || label.includes('title')) value = 'Q4 Engineering Retrospective';
+      else if (ph.includes('channel') || label.includes('channel')) value = '#engineering';
+      else if (ph.includes('date') || label.includes('date')) value = '2026-03-15';
+      else if (ph.includes('url') || label.includes('url')) value = 'https://example.com';
+      else if (ph.includes('name') || label.includes('name')) value = 'Test User';
+      else if (aff.elementType === 'textarea') value = 'This is a detailed test input with enough content to verify the form handles multi-line text correctly.';
       return `    await ${locator}.fill('${value}');`;
     }
 
@@ -119,28 +130,28 @@ function generateOracle(aff: Affordance, locator: string): string {
 
     case 'element-appears':
       return `    // Assert: new element appeared after action\n` +
-             `    await page.waitForTimeout(500);\n` +
-             `    // Verify page content changed (new element, form, dialog, etc.)`;
+             `    await expect.poll(() => page.locator('body').textContent(), { timeout: 5000 }).not.toBe(beforeText);`;
 
     case 'element-disappears':
       return `    // Assert: element removed after action\n` +
-             `    await page.waitForTimeout(500);`;
+             `    await expect(${locator}).toBeHidden({ timeout: 5000 });`;
 
     case 'attribute-changes':
       return `    // Assert: element state changed (active, checked, style, etc.)\n` +
-             `    await page.waitForTimeout(300);`;
+             `    await page.waitForLoadState('domcontentloaded');`;
 
     case 'count-changes':
       return `    // Assert: list/table count changed\n` +
-             `    await page.waitForTimeout(500);`;
+             `    await expect.poll(() => page.locator('${aff.target.selector || 'li, tr'}').count(), { timeout: 5000 }).not.toBe(beforeCount);`;
 
     case 'network-fires':
       return `    // Assert: network request was made (form submitted)\n` +
-             `    await page.waitForTimeout(1000);`;
+             `    // Wrap the triggering action with waitForResponse in the test\n` +
+             `    await page.waitForLoadState('networkidle', { timeout: 5000 });`;
 
     case 'content-changes':
       return `    // Assert: page content updated\n` +
-             `    await page.waitForTimeout(500);`;
+             `    await expect.poll(() => page.locator('main').textContent() ?? page.locator('body').textContent(), { timeout: 5000 }).not.toBe(beforeContent);`;
 
     case 'no-crash':
     default:
@@ -155,6 +166,21 @@ function generateCleanup(aff: Affordance): string {
   if (!aff.mutatesState) return '';
   return `\n    // Cleanup: this test mutates state\n` +
          `    // Consider using unique identifiers or API cleanup in afterEach`;
+}
+
+// ── Pre-action setup for oracles that need "before" state ──
+
+function generatePreAction(aff: Affordance): string {
+  switch (aff.oracle) {
+    case 'element-appears':
+      return `    const beforeText = await page.locator('body').textContent();\n`;
+    case 'count-changes':
+      return `    const beforeCount = await page.locator('${aff.target.selector || 'li, tr'}').count();\n`;
+    case 'content-changes':
+      return `    const beforeContent = await page.locator('main').textContent() ?? await page.locator('body').textContent();\n`;
+    default:
+      return '';
+  }
 }
 
 // ── Single affordance → test code ──
@@ -174,6 +200,7 @@ function generateAffordanceTest(aff: Affordance): string {
     return ''; // no test generated for these
   }
 
+  const preAction = generatePreAction(aff);
   const action = generateAction(aff, locator);
   const oracle = generateOracle(aff, locator);
   const cleanup = generateCleanup(aff);
@@ -182,7 +209,7 @@ function generateAffordanceTest(aff: Affordance): string {
          `    await page.goto('${aff.route}');\n` +
          `    await ${locator}.waitFor({ timeout: 5000 });\n` +
          `\n` +
-         `${action}\n` +
+         `${preAction}${action}\n` +
          `\n` +
          `${oracle}${cleanup}\n` +
          `  });\n`;
@@ -190,18 +217,25 @@ function generateAffordanceTest(aff: Affordance): string {
 
 // ── Main generator ──
 
+export interface GenerateOptions {
+  /** When true, skip writing files that already exist. Default: false. */
+  noOverwrite?: boolean;
+}
+
 export interface GenerateResult {
   totalTests: number;
   interactionTests: number;
   smokeTests: number;
   blockedTests: number;
   routeFiles: number;
+  skippedFiles: number;
 }
 
 export function generateInteractionTests(
   ledger: AffordanceLedger,
   config: UicConfig,
   outputDir: string,
+  options: GenerateOptions = {},
 ): GenerateResult {
   mkdirSync(outputDir, { recursive: true });
   mkdirSync(join(outputDir, 'fixtures'), { recursive: true });
@@ -210,6 +244,8 @@ export function generateInteractionTests(
   let interactionTests = 0;
   let smokeTests = 0;
   let blockedTests = 0;
+  let skippedFiles = 0;
+  const noOverwrite = options.noOverwrite ?? false;
 
   // Group affordances by route
   const routeMap = new Map<string, Affordance[]>();
@@ -223,7 +259,10 @@ export function generateInteractionTests(
   const authSetup = `import { test as setup } from '@playwright/test';
 import path from 'path';
 import fs from 'fs';
+import { fileURLToPath } from 'url';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 const authFile = path.join(__dirname, '../../.uic/auth/user.json');
 
 setup('authenticate', async ({ page }) => {
@@ -231,13 +270,13 @@ setup('authenticate', async ({ page }) => {
   const password = process.env.TEST_USER_PASSWORD || 'testpassword123';
   fs.mkdirSync(path.dirname(authFile), { recursive: true });
 
-  await page.goto('/login');
+  await page.goto('${config.auth?.loginPatterns?.[0] || '/login'}');
   await page.getByLabel(/email/i).or(page.locator('input[type="email"]')).first().fill(email);
   await page.getByLabel(/password/i).or(page.locator('input[type="password"]')).first().fill(password);
-  await page.getByRole('button', { name: /sign in/i }).click();
+  await page.getByRole('button', { name: /${config.auth?.submitButtonPattern || 'sign in|log in|submit|continue'}/i }).click();
 
   try {
-    await page.waitForURL((url) => !url.pathname.startsWith('/login'), { timeout: 8000 });
+    await page.waitForURL((url) => !url.pathname.startsWith('${config.auth?.loginPatterns?.[0] || '/login'}'), { timeout: 8000 });
   } catch {
     console.warn('Login failed — protected route tests may fail.');
   }
@@ -263,7 +302,8 @@ export const test = base.extend<{
   failedRequests: async ({ page }, use) => {
     const failed: Array<{ url: string; status: number }> = [];
     page.on('response', resp => {
-      if (resp.status() >= 400 && !resp.url().includes('/auth/me'))
+      const ignoredEndpoints = ${JSON.stringify(config.auth?.ignoredEndpoints || ['/auth/me'])};
+      if (resp.status() >= 400 && !ignoredEndpoints.some(ep => resp.url().includes(ep)))
         failed.push({ url: resp.url(), status: resp.status() });
     });
     await use(failed);
@@ -277,6 +317,15 @@ export { expect };
   // ── Per-route test files ──
   for (const [route, affordances] of routeMap) {
     const filename = `${sanitizeFilename(route)}.spec.ts`;
+    const filePath = join(outputDir, filename);
+
+    // --no-overwrite: skip files that already exist
+    if (noOverwrite && existsSync(filePath)) {
+      console.log(`  ⏭ Skipping ${filename} (exists, use --force to regenerate)`);
+      skippedFiles++;
+      continue;
+    }
+
     const routeLabel = route === '/' ? 'Home' : route.replace(/^\//, '');
     const needsAuth = affordances.some(a => a.persona !== 'guest');
 
@@ -289,7 +338,11 @@ export { expect };
     const smokeTest = `  test('${routeLabel}: page loads without errors', async ({ page, consoleErrors }) => {\n` +
       `    await page.goto('${route}');\n` +
       `    await page.waitForLoadState('domcontentloaded');\n` +
-      (needsAuth ? `    await expect(page.locator('nav')).toBeVisible();\n` : '') +
+      (needsAuth && config.discovery?.authLandmark
+        ? `    await expect(page.locator('${config.discovery.authLandmark}')).toBeVisible();\n`
+        : needsAuth
+          ? `    await expect(page.locator('body')).toBeVisible();\n`
+          : '') +
       errorFilter +
       `  });\n`;
     smokeTests++;
@@ -329,7 +382,7 @@ export { expect };
       (blockedTestCode.length ? `  // ── Blocked (${blockedTestCode.length}) ──\n${blockedTestCode.join('\n')}\n` : '') +
       `});\n`;
 
-    writeFileSync(join(outputDir, filename), testFile);
+    writeFileSync(filePath, testFile);
   }
 
   // ── Auth invariants ──
@@ -344,20 +397,30 @@ export { expect };
     `    const protectedRoutes = ${JSON.stringify(protectedRoutes, null, 4).replace(/\n/g, '\n    ')};\n\n` +
     `    for (const route of protectedRoutes) {\n` +
     `      await page.goto(route);\n` +
-    `      await page.waitForTimeout(1000);\n` +
-    `      expect(page.url()).toContain('/login');\n` +
+    `      await page.waitForLoadState('domcontentloaded');\n` +
+    `      expect(page.url()).toContain('${config.auth?.loginPatterns?.[0] || '/login'}');\n` +
     `    }\n` +
     `  });\n` +
     `});\n`;
-  writeFileSync(join(outputDir, 'auth-invariants.spec.ts'), authTest);
-  totalTests++;
+  const authInvariantsPath = join(outputDir, 'auth-invariants.spec.ts');
+  if (noOverwrite && existsSync(authInvariantsPath)) {
+    console.log(`  ⏭ Skipping auth-invariants.spec.ts (exists, use --force to regenerate)`);
+    skippedFiles++;
+  } else {
+    writeFileSync(authInvariantsPath, authTest);
+    totalTests++;
+  }
 
   console.log(`\n🧪 Generated ${totalTests} tests in ${outputDir}/`);
   console.log(`   Interaction tests: ${interactionTests}`);
   console.log(`   Smoke tests:       ${smokeTests}`);
   console.log(`   Blocked tests:     ${blockedTests}`);
   console.log(`   Auth invariants:   1`);
-  console.log(`   Route files:       ${routeMap.size}\n`);
+  console.log(`   Route files:       ${routeMap.size}`);
+  if (skippedFiles > 0) {
+    console.log(`   Skipped (exist):   ${skippedFiles}`);
+  }
+  console.log('');
 
   return {
     totalTests,
@@ -365,5 +428,6 @@ export { expect };
     smokeTests,
     blockedTests,
     routeFiles: routeMap.size,
+    skippedFiles,
   };
 }

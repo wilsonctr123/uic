@@ -64,30 +64,35 @@ export function detectStack(projectRoot: string): DetectionResult {
   if (pkgJson) {
     const allDeps = { ...pkgJson.dependencies, ...pkgJson.devDependencies };
 
+    // Helper: generate run command for detected package manager
+    const pm = result.packageManager;
+    const runDev = pm === 'yarn' ? 'yarn dev' : `${pm} run dev`;
+    const runStart = pm === 'yarn' ? 'yarn start' : `${pm} start`;
+
     // Detect framework
     if (allDeps['next']) {
       result.framework = 'nextjs';
-      result.devCommand = 'npm run dev';
+      result.devCommand = runDev;
       result.baseUrl = 'http://localhost:3000';
     } else if (allDeps['nuxt'] || allDeps['nuxt3']) {
       result.framework = 'nuxt';
-      result.devCommand = 'npm run dev';
+      result.devCommand = runDev;
       result.baseUrl = 'http://localhost:3000';
     } else if (allDeps['@sveltejs/kit']) {
       result.framework = 'sveltekit';
-      result.devCommand = 'npm run dev';
+      result.devCommand = runDev;
       result.baseUrl = 'http://localhost:5173';
     } else if (allDeps['react'] && allDeps['vite']) {
       result.framework = 'react-vite';
-      result.devCommand = `cd ${pkgDir === projectRoot ? '.' : pkgDir.replace(projectRoot + '/', '')} && npm run dev`;
+      result.devCommand = `cd ${pkgDir === projectRoot ? '.' : pkgDir.replace(projectRoot + '/', '')} && ${runDev}`;
       result.baseUrl = 'http://localhost:5173';
     } else if (allDeps['react']) {
       result.framework = 'react';
-      result.devCommand = 'npm start';
+      result.devCommand = runStart;
       result.baseUrl = 'http://localhost:3000';
     } else if (allDeps['vue']) {
       result.framework = 'vue';
-      result.devCommand = 'npm run dev';
+      result.devCommand = runDev;
       result.baseUrl = 'http://localhost:5173';
     } else if (allDeps['@angular/core']) {
       result.framework = 'angular';
@@ -95,7 +100,7 @@ export function detectStack(projectRoot: string): DetectionResult {
       result.baseUrl = 'http://localhost:4200';
     } else if (allDeps['svelte']) {
       result.framework = 'svelte';
-      result.devCommand = 'npm run dev';
+      result.devCommand = runDev;
       result.baseUrl = 'http://localhost:5173';
     }
 

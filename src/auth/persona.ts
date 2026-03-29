@@ -10,11 +10,34 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import type { AuthConfig, PersonaConfig } from '../config/types.js';
 
+/**
+ * Check whether a URL matches any of the configured login page patterns.
+ */
+function isLoginPage(url: string, authConfig: AuthConfig): boolean {
+  const patterns = authConfig.loginPatterns || ['/login', '/signin', '/auth'];
+  return patterns.some(p => url.includes(p));
+}
+
 export interface AuthResult {
   context: BrowserContext;
   persona: string;
   success: boolean;
   error?: string;
+  /** Serialized cookie header for API calls (e.g., seeding) */
+  cookie?: string;
+}
+
+/**
+ * Extract cookies from a browser context as a Cookie header string.
+ */
+async function extractCookieHeader(context: BrowserContext, baseUrl: string): Promise<string> {
+  try {
+    const url = new URL(baseUrl);
+    const cookies = await context.cookies(url.origin);
+    return cookies.map(c => `${c.name}=${c.value}`).join('; ');
+  } catch {
+    return '';
+  }
 }
 
 /**
@@ -48,9 +71,9 @@ export async function authenticatePersona(
     case 'storage-state':
       return storageStateAuth(baseUrl, persona, personaConfig!, authDir);
     case 'ui-flow':
-      return uiFlowAuth(baseUrl, persona, personaConfig!, authDir);
+      return uiFlowAuth(baseUrl, persona, personaConfig!, authConfig, authDir);
     case 'api-bootstrap':
-      return apiBootstrapAuth(baseUrl, persona, personaConfig!, authDir);
+      return apiBootstrapAuth(baseUrl, persona, personaConfig!, authConfig, authDir);
     case 'custom':
       return customAuth(baseUrl, persona, personaConfig!, authConfig, authDir);
     default:
@@ -94,7 +117,7 @@ async function storageStateAuth(
     ignoreHTTPSErrors: true,
   });
 
-  return { context, persona, success: true };
+  return { context, persona, success: true, cookie: await extractCookieHeader(context, baseUrl) };
 }
 
 /**
@@ -104,6 +127,7 @@ async function uiFlowAuth(
   baseUrl: string,
   persona: string,
   config: PersonaConfig,
+  authConfig: AuthConfig,
   authDir: string,
 ): Promise<AuthResult> {
   const cachedStatePath = join(authDir, `${persona}.json`);
@@ -118,10 +142,10 @@ async function uiFlowAuth(
       });
       // Verify the session is still valid
       const page = await context.newPage();
-      const resp = await page.goto(`${baseUrl}/`, { waitUntil: 'networkidle', timeout: 10000 });
-      if (!page.url().includes('login')) {
+      const resp = await page.goto(`${baseUrl}/`, { waitUntil: 'domcontentloaded', timeout: 10000 });
+      if (!isLoginPage(page.url(), authConfig)) {
         await page.close();
-        return { context, persona, success: true };
+        return { context, persona, success: true, cookie: await extractCookieHeader(context, baseUrl) };
       }
       await context.close();
       await browser.close();
@@ -139,7 +163,7 @@ async function uiFlowAuth(
       for (const step of config.loginSteps) {
         switch (step.action) {
           case 'goto':
-            await page.goto(step.url || `${baseUrl}/login`, { waitUntil: 'networkidle' });
+            await page.goto(step.url || `${baseUrl}${authConfig.loginPatterns?.[0] || '/login'}`, { waitUntil: 'domcontentloaded' });
             break;
           case 'fill':
             await page.locator(step.selector!).fill(step.value || '');
@@ -154,7 +178,7 @@ async function uiFlowAuth(
       }
     } else {
       // Default: standard email/password form
-      await page.goto(`${baseUrl}/login`, { waitUntil: 'networkidle' });
+      await page.goto(`${baseUrl}${authConfig.loginPatterns?.[0] || '/login'}`, { waitUntil: 'domcontentloaded' });
 
       // Fill email — try role-based first, fall back to common selectors
       const emailField = page.getByLabel(/email/i).or(page.locator('input[type="email"]')).or(page.locator('#login-email'));
@@ -165,12 +189,15 @@ async function uiFlowAuth(
       await passwordField.first().fill(config.password || '');
 
       // Click submit
-      await page.getByRole('button', { name: /sign in|log in|submit/i }).click();
+      const submitPattern = authConfig.submitButtonPattern
+        ? new RegExp(authConfig.submitButtonPattern, 'i')
+        : /sign in|log in|submit|continue|enter/i;
+      await page.getByRole('button', { name: submitPattern }).click();
       await page.waitForTimeout(3000);
     }
 
     // Check if login succeeded
-    if (page.url().includes('login')) {
+    if (isLoginPage(page.url(), authConfig)) {
       await page.close();
       return { context, persona, success: false, error: 'Login failed — still on login page' };
     }
@@ -180,7 +207,7 @@ async function uiFlowAuth(
     await context.storageState({ path: cachedStatePath });
     await page.close();
 
-    return { context, persona, success: true };
+    return { context, persona, success: true, cookie: await extractCookieHeader(context, baseUrl) };
   } catch (err) {
     await page.close();
     return { context, persona, success: false, error: `UI flow auth failed: ${(err as Error).message}` };
@@ -194,6 +221,7 @@ async function apiBootstrapAuth(
   baseUrl: string,
   persona: string,
   config: PersonaConfig,
+  authConfig: AuthConfig,
   authDir: string,
 ): Promise<AuthResult> {
   const cachedStatePath = join(authDir, `${persona}.json`);
@@ -215,17 +243,23 @@ async function apiBootstrapAuth(
     });
 
     if (!response.ok()) {
-      // Try signup as fallback
-      const signupResp = await page.request.post(`${baseUrl}/api/v1/auth/signup`, {
-        data: { email: config.email, password: config.password, display_name: `Test ${persona}` },
-      });
+      if (config.signupEndpoint) {
+        // Try signup as fallback only if configured
+        const signupBody = config.signupBody || { email: config.email, password: config.password };
+        const signupResp = await page.request.post(`${baseUrl}${config.signupEndpoint}`, {
+          data: signupBody,
+        });
 
-      if (signupResp.ok()) {
-        // Retry login
-        const retryResp = await page.request.post(`${baseUrl}${endpoint}`, { data: loginData });
-        if (!retryResp.ok()) {
+        if (signupResp.ok()) {
+          // Retry login
+          const retryResp = await page.request.post(`${baseUrl}${endpoint}`, { data: loginData });
+          if (!retryResp.ok()) {
+            await page.close();
+            return { context, persona, success: false, error: `API login failed: ${retryResp.status()}` };
+          }
+        } else {
           await page.close();
-          return { context, persona, success: false, error: `API login failed: ${retryResp.status()}` };
+          return { context, persona, success: false, error: `API login failed: ${response.status()}` };
         }
       } else {
         await page.close();
@@ -234,14 +268,23 @@ async function apiBootstrapAuth(
     }
 
     // Navigate to verify and capture full state
-    await page.goto(`${baseUrl}/`, { waitUntil: 'networkidle', timeout: 10000 });
+    await page.goto(`${baseUrl}/`, { waitUntil: 'domcontentloaded', timeout: 10000 });
+
+    // Verify we actually landed on an authenticated page (not still on login)
+    const finalUrl = page.url();
+    const authPaths = ['/login', '/signin', '/sign-in', '/auth', '/register', '/signup'];
+    const stillOnAuth = authPaths.some(p => new URL(finalUrl).pathname.startsWith(p));
+    if (stillOnAuth) {
+      await page.close();
+      return { context, persona, success: false, error: `Auth failed: still on ${new URL(finalUrl).pathname} after login` };
+    }
 
     // Cache state
     mkdirSync(dirname(cachedStatePath), { recursive: true });
     await context.storageState({ path: cachedStatePath });
     await page.close();
 
-    return { context, persona, success: true };
+    return { context, persona, success: true, cookie: await extractCookieHeader(context, baseUrl) };
   } catch (err) {
     await page.close();
     return { context, persona, success: false, error: `API bootstrap failed: ${(err as Error).message}` };

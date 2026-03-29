@@ -53,10 +53,15 @@ function extractPassingTests(results: TestResult): Set<string> {
 
 function hasPassingTest(aff: Affordance, passing: Set<string>): boolean {
   // Match by affordance ID prefix in test title
-  return [...passing].some(t =>
-    t.includes(aff.id) ||
-    t.toLowerCase().includes(aff.label.toLowerCase().substring(0, 30))
-  );
+  if ([...passing].some(t => t.includes(aff.id))) return true;
+
+  // Stricter match: test name must contain BOTH the route path AND the affordance label
+  const normLabel = aff.label.toLowerCase().replace(/[-:]/g, ' ');
+  const normRoute = (aff as any).route?.replace(/\//g, '') || '';
+  return [...passing].some(t => {
+    const normTest = t.toLowerCase().replace(/[-:]/g, ' ');
+    return normTest.includes(normRoute || 'home') && normTest.includes(normLabel.substring(0, Math.min(normLabel.length, 40)));
+  });
 }
 
 // ── Main coverage check ──
@@ -173,9 +178,11 @@ export function checkCoverage(
         invariantsTested++;
         continue;
       }
-      const tested = [...passing].some(t =>
-        t.toLowerCase().includes(inv.name.replace(/-/g, ' '))
-      );
+      const normInv = inv.name.toLowerCase().replace(/-/g, ' ');
+      const tested = [...passing].some(t => {
+        const normTest = t.toLowerCase().replace(/-/g, ' ');
+        return normTest.includes(normInv);
+      });
       if (tested) invariantsTested++;
       else {
         issues.push({

@@ -138,7 +138,7 @@ const PATTERNS: Array<{
     fix: 'Generate the fixture file',
   },
   {
-    regex: /No emails found|No tasks found|No results/i,
+    regex: /no .* found|no results|empty|0 results|nothing to show|no data|no items/i,
     layer: 'B', category: 'missing-seed-data', confidence: 0.70,
     target: 'seed', type: 'strengthening',
     rationale: 'Page shows empty state — needs seeded data',
@@ -271,9 +271,29 @@ interface TestSuite {
 }
 
 export function diagnoseAllFailures(resultsPath: string): Diagnosis[] {
-  if (!existsSync(resultsPath)) return [];
+  if (!existsSync(resultsPath)) {
+    console.warn('⚠️  No test results file found at', resultsPath);
+    console.warn('   Ensure playwright.config.ts includes: reporter: [["json", { outputFile: ".uic/test-results.json" }]]');
+    return [];
+  }
 
-  const results: TestResult = JSON.parse(readFileSync(resultsPath, 'utf-8'));
+  const raw = readFileSync(resultsPath, 'utf-8');
+  if (!raw.trim()) {
+    console.warn('⚠️  Test results file is empty:', resultsPath);
+    return [];
+  }
+
+  const results: TestResult = JSON.parse(raw);
+
+  // Validate that results contain actual test data
+  const totalTests = (results as any).stats?.expected ?? 0;
+  const totalSkipped = (results as any).stats?.skipped ?? 0;
+  const totalUnexpected = (results as any).stats?.unexpected ?? 0;
+  if (totalTests === 0 && totalSkipped === 0 && totalUnexpected === 0 && (!results.suites || results.suites.length === 0)) {
+    console.warn('⚠️  Test results file has no test data. The JSON reporter may not be capturing results.');
+    console.warn('   Try: npx playwright test --reporter=json > .uic/test-results.json');
+  }
+
   const diagnoses: Diagnosis[] = [];
 
   function walk(suite: TestSuite, prefix: string) {

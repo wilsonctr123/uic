@@ -1,355 +1,288 @@
-# UIC — Browser-First Webapp Test Coverage
+# UIC — AI QA Engineer for Any Webapp
 
-Automated test generation and enforcement for web applications. UIC crawls your webapp with a real browser, discovers every interactive control, generates Playwright tests that actually click/fill/toggle/upload, and self-heals until 100% pass rate.
+**UIC doesn't click buttons and check "no crash." It reads your codebase, understands what your app does, and tests whether it actually works.**
 
-Built for AI coding agents (Claude Code, Copilot, Codex) and developers who need proof that UI changes work — not just that backend checks pass.
+Most test generators produce tests like this:
+```typescript
+// What other tools generate:
+test('click Submit', async ({ page }) => {
+  await page.click('#submit');
+  await page.waitForTimeout(500); // hope nothing broke
+});
+```
+
+UIC produces tests like this:
+```typescript
+// What UIC generates:
+test('import Slack transcript creates searchable content', async ({ page }) => {
+  // REASONING: The import page accepts Slack transcripts. After import,
+  // the content should be searchable via the search page.
+  await page.goto('/import');
+  await page.getByPlaceholder(/Title/i).fill('Engineering Standup 2026-03-27');
+  await page.getByPlaceholder(/Channel/i).fill('#engineering');
+  await page.getByPlaceholder(/Paste a Slack/i).fill(
+    'Alice: Deployed v2.1 to staging\nBob: LGTM, no rollbacks needed'
+  );
+
+  const [response] = await Promise.all([
+    page.waitForResponse(r => r.url().includes('/import/slack') && r.status() === 200),
+    page.getByRole('button', { name: /Import Slack Transcript/i }).click(),
+  ]);
+
+  // Verify import succeeded — not just that the button was clickable
+  await expect(page.locator('main')).toContainText(/success|queued|processing/i);
+});
+```
+
+## Quick Start
+
+```bash
+# Install globally
+npm install -g uic
+
+# In your webapp project:
+cd my-app
+uic init          # Auto-detects React/Vue/Next/Svelte/Angular
+uic               # Runs full pipeline: understand → discover → test → gate
+
+# Or with Claude Code:
+/uic              # Full AI-powered pipeline with visual analysis
+/uic-followup     # Continue where /uic left off (no full re-run)
+```
+
+## What Makes UIC Different
+
+### 1. It reads your codebase before testing
+
+UIC reads your `README.md`, `CLAUDE.md`, route definitions, API endpoints, and database schema to understand what your app IS — not just what DOM elements it has.
+
+```
+📖 Phase 1: Reading codebase...
+   Project: "email-orchestrator"
+   Goal: "AI-powered executive assistant for email triage, document search, and task tracking"
+   Features: 10 pages, 6 AI features
+   Data: 90 emails, 50 tasks
+   API keys: Anthropic CONFIGURED, OpenAI NOT SET
+```
+
+### 2. It looks at your app with screenshots
+
+UIC takes screenshots of every page and visually analyzes them — finding multi-section layouts, upload zones, hidden features, and UI patterns that DOM crawling misses.
+
+### 3. It generates tests that verify business logic
+
+Not "button is visible" but "clicking the filter actually changes which tasks are shown." Not "input accepts text" but "searching for 'budget' returns emails about budget topics."
+
+### 4. It finds real bugs
+
+When a test fails because the AI chat returns a 401 auth error, UIC reports that as an **app bug** with severity, route, and fix instructions — not as a test failure to skip.
+
+### 5. It produces an honest report
+
+The report shows: what was tested, what wasn't, what bugs were found, what the user needs to fix, and an honest quality score that penalizes skipped critical tests.
+
+### 6. It doesn't waste tokens
+
+After the initial `/uic` run, use `/uic-followup` to check only the items you fixed — no full re-run needed. Pending action items persist in `.uic/TODO.md`.
 
 ## Commands
 
+### CLI (works without Claude Code)
+
 | Command | What It Does |
 |---------|-------------|
-| **`/uic`** | **Run the full pipeline in one shot** (auto-detects bootstrap vs maintain) |
-| `/uic-init` | Detect framework, create `uic.config.ts` |
-| `/uic-doctor` | Verify setup: config, Playwright, artifacts |
-| `/uic-discover` | Crawl app with real browser, inventory all controls (auto-starts server) |
-| `/uic-contract-gen` | Generate coverage contract + affordance ledger |
-| `/uic-contract-diff` | Detect UI drift since last contract |
-| `/uic-contract-update` | Apply drift to contract, preserve manual edits |
-| `/uic-test-gen` | Generate real Playwright interaction tests |
-| `/uic-test-run` | Execute tests (auto-starts server) |
-| `/uic-optimize-loop` | Diagnose failures → repair → rerun until 100% |
-| `/uic-gate` | Coverage check — exit 0 (pass) or 1 (fail) |
+| `uic` | **Run the full pipeline** |
+| `uic init` | Detect framework, create `uic.config.ts` |
+| `uic discover` | Crawl app, inventory all interactive elements |
+| `uic contract gen` | Generate coverage contract |
+| `uic contract diff` | Detect UI drift |
+| `uic contract update` | Apply drift to contract |
+| `uic test gen` | Generate Playwright tests (--no-overwrite default) |
+| `uic test run` | Execute tests (auto-starts services) |
+| `uic observe` | Live DOM observation for interaction groups |
+| `uic optimize` | Self-healing test repair |
+| `uic strengthen` | Add quality signals to tests |
+| `uic gate` | Coverage check — exit 0 (pass) or 1 (fail) |
+| `uic evidence` | Quality scoring report |
+| `uic todo` | Show pending action items |
+| `uic doctor` | Verify setup |
+
+### Claude Code Skills (AI-powered)
+
+| Skill | What It Does |
+|-------|-------------|
+| **`/uic`** | Full AI pipeline: visual analysis + code reading + intelligent testing + honest report |
+| **`/uic-followup`** | Continue where `/uic` left off — check fixes, run targeted tests, update TODO |
+| `/uic-init` | Detect framework, create config |
+| `/uic-discover` | Browser crawl + element grouping |
+| `/uic-test-gen` | Generate interaction tests |
+| `/uic-test-run` | Execute tests |
+| `/uic-gate` | Coverage check |
 | `/uic-report` | Display coverage report |
-
-**CLI equivalents** (without Claude Code):
-
-```
-uic init | discover | contract gen|diff|update | test gen|run | optimize | gate | report | doctor
-```
-
-## Requirements
-
-| Requirement | Version | Why |
-|------------|---------|-----|
-| **Node.js** | >= 18 | Runs the UIC CLI and Playwright |
-| **npm** | any | Installs dependencies |
-| **Git** | any | Clones the repo |
-| **Claude Code** | latest | For `/uic` slash commands (optional — CLI works without it) |
-
-UIC's own dependencies (`commander`, `playwright`, `typescript`) are installed automatically by `npm install`.
-
-Your project also needs `@playwright/test` as a dev dependency — the install steps below cover this.
+| `/uic-optimize-loop` | Claude-powered deep repair |
+| `/uic-doctor` | Verify setup |
 
 ## Install
 
-### One-line install (recommended)
+### Option 1: npm (recommended)
 
 ```bash
-git clone https://github.com/wilsonctr123/uic.git ~/.uic-tool && ~/.uic-tool/install.sh
+npm install -g uic
 ```
 
-This installs:
-- **12 global Claude Code skills** (`/uic`, `/uic-discover`, etc.) — available in every project, every session
-- **UIC CLI** — built and ready at `~/.uic-tool/dist/cli.js`
-
-### Then in your webapp project:
+### Option 2: From source
 
 ```bash
-# Install Playwright (one time)
+git clone https://github.com/wilsonctr123/uic.git ~/.uic-tool
+cd ~/.uic-tool && npm install && npm run build
+# Optional: install Claude Code skills
+./install.sh
+```
+
+### In your project
+
+```bash
 npm install -D @playwright/test
 npx playwright install chromium
-
-# Init UIC config
-/uic-init
-
-# Set test credentials
-echo 'TEST_USER_EMAIL=test@example.com' >> .env
-echo 'TEST_USER_PASSWORD=secret123' >> .env
-
-# Run everything
-/uic
+uic init
+uic
 ```
 
-### Manual install (without global skills)
+## Configuration
 
-If you prefer project-local instead of global:
-
-```bash
-# Clone into your project
-git clone https://github.com/wilsonctr123/uic.git tool/
-cd tool && npm install && npm run build && cd ..
-
-# Copy slash commands (project-local only)
-cp -r tool/claude-integration/commands/ .claude/commands/
-
-# Run
-node tool/dist/cli.js init
-```
-
-### Config
-
-`/uic-init` auto-detects your framework and generates `uic.config.ts`:
+`uic init` auto-detects your stack. For full-stack apps, configure services:
 
 ```typescript
+// uic.config.ts
 export default {
   app: {
     name: 'My App',
     baseUrl: 'http://localhost:3000',
-    startCommand: 'npm run dev',       // UIC starts this for you
   },
+  services: [
+    { name: 'backend', command: 'python manage.py runserver', port: 8000, healthCheck: '/api/health' },
+    { name: 'frontend', command: 'npm run dev', port: 3000, dependsOn: ['backend'] },
+  ],
   auth: {
-    strategy: 'ui-flow',
+    strategy: 'api-bootstrap',   // or 'ui-flow', 'storage-state', 'custom'
     personas: {
       user: {
-        email: '${TEST_USER_EMAIL}',   // loaded from .env
+        email: '${TEST_USER_EMAIL}',
         password: '${TEST_USER_PASSWORD}',
+        loginEndpoint: '/api/auth/login',
+        signupEndpoint: '/api/auth/register',
       },
     },
   },
   discovery: {
-    seedRoutes: ['/', '/login', '/dashboard', '/settings'],
+    seedRoutes: ['/', '/dashboard', '/search', '/settings'],
+    excludeRoutes: ['/admin'],
+  },
+  seeding: {
+    apiCalls: [
+      { method: 'POST', endpoint: '/api/tasks', body: { title: 'Test task' }, authenticated: true },
+    ],
   },
 } satisfies UicConfig;
 ```
 
-## Example Run Output
+## How It Works
 
-```
-$ /uic
+### Phase 1: UNDERSTAND
+Reads README, CLAUDE.md, route definitions, API endpoints, database schema. Optionally uses Claude API to reason about each feature's purpose.
 
-  App not running at http://localhost:5173
-  Starting: npm run dev
-  Waiting up to 30s for http://localhost:5173...
-  ✓ Server ready at http://localhost:5173
+### Phase 2: DISCOVER
+Launches headless Chromium, authenticates, crawls every route. Groups related elements by container hierarchy and ARIA relationships. Classifies interaction patterns: chat, search, form, CRUD, filter, wizard, modal, pagination.
 
-🔐 Authenticating as "user"...
-   ✓ Authenticated as user
+### Phase 3: OBSERVE
+For each interaction group, actually interacts with the live app. Watches DOM mutations via `MutationObserver`. Records network requests. Measures settle time. Produces observation-grounded assertions.
 
-🔍 UIC Discovery — http://localhost:5173
+### Phase 4: GENERATE
+Three test types:
+- **Primitive** — one test per element (click, fill, toggle)
+- **Composite** — multi-step flows (fill form → submit → verify response)
+- **Intelligent** — domain-aware tests from app understanding (realistic queries, validation checks)
 
-  Crawling /login...
-  Crawling /...
-  Crawling /chat...
-  Crawling /search...
-  Crawling /tasks...
-  Crawling /import...
-  Crawling /setup...
-  Crawling /admin...
+### Phase 5: SELF-HEAL
+Mechanical repair (10+ failure categories) + Claude-powered deep repair. Strengthener adds quality signals (waitForResponse, expect.poll, error pattern checks).
 
-✅ Discovery complete → .uic/inventory.json
-   Routes: 9
-   Elements: 127
-   Buttons: 61
-   Inputs: 15
-   Links: 44
+### Phase 6: GATE
+Binary pass/fail. Every blocking affordance must have a passing test. Quality threshold enforced (default 9.5/10).
 
-📊 Affordance Ledger → .uic/ledger.json
-   Raw discovered: 127
-   Deduplicated:   108
-   Accounted:      108
-   Unaccounted:    0
-   ─────────────────────────
-   Executable:     96
-   Blocked:        9
-   Informational:  3
+### Phase 7: REPORT
+Standardized report with: executive summary, per-page feature matrix, per-test details, app bugs found, skipped test justifications, coverage gaps, and user action items.
 
-   ✅ All affordances accounted for.
+## The Report
 
-🧪 Generated 132 tests
-   Interaction tests: 96
-   Smoke tests:       9
-   Blocked tests:     9
-   Auth invariants:   1
+Every `/uic` run produces `.uic/REPORT.md` with:
 
-🔧 UIC Optimize — Self-healing test repair
-
-── Iteration 1/3 ──
-
-📋 18 failures diagnosed:
-   ambiguous-locator: 3
-   dynamic-label: 7
-   expected-401: 2
-   self-navigation: 2
-   date-format: 1
-   llm-timeout: 3
-
-🔨 Repairs: 18 applied, 0 skipped
-   ✓ [A/ambiguous-locator] — added .first()
-   ✓ [A/dynamic-label] — contextual locator
-   ✓ [C/expected-401] — filtered expected errors
-   ...
-
-🔄 Rerunning tests...
-
-📊 Quality Metrics (Iteration 1)
-   Pass rate:           100.0% (132/132)
-   Interaction coverage: 100.0%
-   Blocked:             9
-   Weakened:            0
-   Coverage removals:   0
-
-✅ 100% pass rate achieved!
-
-============================================================
-UIC COVERAGE GATE
-============================================================
-
-✅ PASSED — 0 errors, 0 warnings
-
-📊 Interaction: 96/96 required controls tested
-   Smoke:       9/9 routes tested
-   Blocked:     9 (with reasons)
-   Affordances: 96 executable / 108 total
-   Invariants:  4/4 tested
-============================================================
-```
+- **Executive Summary** — pass/fail, quality score, test counts
+- **Per-Page Coverage** — every feature found, whether it's tested, result
+- **App Bugs Found** — real bugs with severity, route, expected vs actual, fix instructions
+- **Skipped Tests** — classified as LEGITIMATE or FIXABLE
+- **Coverage Gaps** — features found but not tested, with priority
+- **User Action Items** — ranked list of things YOU need to fix
 
 ## Supported Frameworks
 
 Auto-detected by `uic init`:
-
 - React (Vite, CRA) / Next.js
 - Vue (Vite) / Nuxt
 - Svelte / SvelteKit
 - Angular
 - Any SPA or SSR webapp accessible via URL
 
+Backend auto-detection: FastAPI, Django, Flask, Express, Rails, Go, and any service with a health endpoint.
+
 ## Auth Strategies
 
-| Strategy | How It Works | Best For |
-|----------|-------------|----------|
-| `ui-flow` | Drives login form, caches session | Most apps (recommended) |
-| `api-bootstrap` | Calls login API, injects cookies | API-based auth |
+| Strategy | How | Best For |
+|----------|-----|----------|
+| `ui-flow` | Drives login form, caches session | Most apps |
+| `api-bootstrap` | Calls login API, injects cookies, auto-signup | API auth |
 | `storage-state` | Loads saved browser cookies | Pre-exported sessions |
 | `custom` | Your own auth function | SSO, MFA, OAuth |
 
-## How It Works
+## Intelligence Layer (Optional)
 
-### 1. Discovery
+Set `ANTHROPIC_API_KEY` to enable Claude-powered features:
+- **App understanding** — Claude reads your codebase and reasons about each feature
+- **Scenario generation** — Claude generates domain-aware test scenarios
+- **Output evaluation** — Claude judges whether AI feature responses are relevant
 
-UIC launches headless Chromium, authenticates, and crawls every seed route. Extracts all interactive elements: buttons, links, inputs, uploads, checkboxes, tables, dialogs, tabs, menus — with their roles, labels, selectors, and states.
-
-### 2. Affordance Classification
-
-Each element becomes an **affordance** with:
-- **Action**: click, fill, toggle, upload, navigate, select
-- **Oracle**: what should happen (URL changes, element appears, attribute changes, network fires)
-- **Disposition**: executable, blocked (with reason), informational, or excluded
-
-The ledger accounts for every element. Zero unaccounted enforced.
-
-### 3. Test Generation
-
-Each executable affordance gets a **real Playwright test** — not a visibility check, not a TODO stub:
-
-```typescript
-test('search:button:keyword: click keyword', async ({ page }) => {
-  await page.goto('/search');
-  await page.getByRole('button', { name: /keyword/i }).waitFor({ timeout: 5000 });
-  await page.getByRole('button', { name: /keyword/i }).click();
-  // Assert: attribute-changes (filter chip activation)
-  await page.waitForTimeout(300);
-});
-```
-
-Widget adapters handle special cases (chips with inline styles, file uploads via `setInputFiles`, Enter-to-submit inputs, ISO date format).
-
-### 4. Self-Healing Optimize Loop
-
-Diagnoses failures into 4 layers:
-
-| Layer | What | Auto-fix? |
-|-------|------|-----------|
-| **A** | Test defects (bad locator, wrong assertion) | Yes |
-| **B** | Missing preconditions (fixture, seed data) | Yes |
-| **C** | Expected runtime (401, self-nav, LLM timeout) | Yes |
-| **D** | Real app bugs (JS exception, API 500) | With `--allow-app-fixes` |
-
-Iterates up to 3 times or until 100%.
-
-### 5. Coverage Gate
-
-Binary: every blocking executable affordance must have a passing test. Fails if unaccounted affordances > 0, blocking obligations silently decreased, or coverage improved only by weakening tests.
-
-## Artifacts
-
-| File | What It Is |
-|------|-----------|
-| `.uic/inventory.json` | Every route and element discovered |
-| `.uic/ledger.json` | Affordance accounting (0 unaccounted enforced) |
-| `.uic/contract.json` | Coverage contract: surfaces, flows, invariants |
-| `.uic/test-results.json` | Playwright test outcomes |
-| `.uic/report.json` | Gate result with interaction coverage buckets |
-| `.uic/repair-log.json` | Every repair with confidence and type |
-| `.uic/generation-quality.json` | Multi-metric quality scores |
-| `.uic/preconditions.json` | Synthesized test inputs |
-| `.uic/screenshots/` | Full-page screenshots per route |
-
-## Claude Code Completion Hook
-
-Prevents Claude from claiming UI work is done without browser proof:
-
-```json
-{
-  "hooks": {
-    "PostToolUse": [{
-      "matcher": "TaskComplete",
-      "hooks": [{
-        "type": "command",
-        "command": "node ./tool/dist/cli.js gate"
-      }]
-    }]
-  }
-}
-```
+Without an API key, UIC falls back to heuristic analysis (still works, less intelligent).
 
 ## Architecture
 
 ```
 src/
-├── cli.ts                          # 11 CLI commands
-├── affordance/
-│   ├── classifier.ts              # Element → affordance (action + oracle)
-│   └── ledger.ts                  # Full accounting artifact
-├── auth/persona.ts                 # 4 auth strategies
-├── config/
-│   ├── types.ts                    # TypeScript interfaces
-│   ├── loader.ts                   # Config + .env loading
-│   └── detector.ts                 # Framework auto-detection
-├── contract/
-│   ├── generator.ts               # Inventory → contract
-│   └── differ.ts                  # Contract diff + update
-├── discovery/
-│   ├── crawler.ts                  # Playwright browser crawl
-│   └── element-classifier.ts      # DOM element classification
-├── gate/checker.ts                 # Coverage gate (interaction buckets)
-├── generation/
-│   ├── primitive-generator.ts     # Affordance → Playwright test code
-│   └── adapters.ts               # Widget-specific adapters
-├── repair/
-│   ├── diagnoser.ts               # 4-layer failure classification
-│   ├── precondition-synthesizer.ts # Auto-generate test inputs
-│   └── quality-tracker.ts        # Multi-metric quality tracking
-└── utils/server.ts                # Auto-start/stop dev server
+├── cli.ts                    # 15 CLI commands
+├── intelligence/             # v8: AI reasoning layer
+│   ├── app-reader.ts         # Read codebase, understand project
+│   ├── scenario-planner.ts   # Generate intelligent test scenarios
+│   ├── output-evaluator.ts   # Judge AI output quality
+│   ├── llm-client.ts         # Provider-agnostic LLM interface
+│   └── llm-providers/        # Anthropic + OpenAI (raw fetch, no SDK)
+├── discovery/                # Browser crawl + element classification
+├── semantic/                 # Live DOM observation + pattern classification
+├── generation/               # Test code generation (3 types)
+├── affordance/               # Element → testable action mapping
+├── contract/                 # Coverage contracts + drift detection
+├── repair/                   # Self-healing (mechanical + strengthener)
+├── gate/                     # Binary coverage gate
+├── reporting/                # Quality scoring + evidence
+├── pipeline/                 # Single-command orchestrator
+└── utils/                    # Service startup, seeding, preflight
 ```
-
-## Results on Example App
-
-| Metric | Before UIC | After UIC |
-|--------|-----------|-----------|
-| Tests | 0 | 132 |
-| Real interaction tests | 0 | 132 |
-| Pass rate | — | 100% |
-| Elements accounted | — | 108/108 |
-| Unaccounted | — | 0 |
 
 ## Philosophy
 
-- Backend checks are not UI proof
-- Every element is accounted for — zero silent skips
-- Real interactions, not visibility checks
-- Self-healing, not manual triage
-- Drift is surfaced, not ignored
+- **Understand first, test second** — read the codebase before generating tests
+- **Verify business logic, not DOM state** — "filter changes visible tasks" > "button is visible"
+- **Honest scoring** — skipped critical tests lower the score, not hide it
+- **App bugs are the goal** — a test that finds a real bug is the most valuable output
+- **No wasted tokens** — `/uic-followup` continues where you left off
+- **Zero hardcoded assumptions** — works on any webapp, any framework
 
 ## License
 

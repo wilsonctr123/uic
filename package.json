@@ -9,10 +9,11 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "tsc",
+    "build": "node build.js",
     "dev": "tsc --watch",
     "lint": "tsc --noEmit",
-    "test": "node --test dist/**/*.test.js"
+    "test": "node --test dist/**/*.test.js",
+    "prepublishOnly": "node build.js"
   },
   "keywords": [
     "ui-testing",
@@ -28,21 +29,30 @@
   "engines": {
     "node": ">=18"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wilsonctr/uic.git"
+  },
+  "author": "Wilson Carter",
+  "bugs": {
+    "url": "https://github.com/wilsonctr/uic/issues"
+  },
+  "homepage": "https://github.com/wilsonctr/uic#readme",
   "dependencies": {
-    "commander": "^13.0.0",
-    "playwright": "^1.50.0"
+    "commander": "^13.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "esbuild": "^0.27.4",
     "typescript": "^5.7.0"
   },
   "peerDependencies": {
-    "@playwright/test": ">=1.40.0"
+    "@playwright/test": ">=1.40.0",
+    "playwright": ">=1.40.0"
   },
   "files": [
     "dist/",
     "schemas/",
-    "templates/",
     "README.md",
     "LICENSE"
   ]

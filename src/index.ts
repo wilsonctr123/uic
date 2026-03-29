@@ -22,4 +22,19 @@ export { diagnoseFailure, diagnoseAllFailures } from './repair/diagnoser.js';
 export { synthesizePreconditions } from './repair/precondition-synthesizer.js';
 export { checkHardGate, buildMetrics, writeQualityReport, writeRepairLog } from './repair/quality-tracker.js';
 
+export { readAppUnderstanding, readAppUnderstandingWithLLM } from './intelligence/app-reader.js';
+export { generateTestScenarios } from './intelligence/scenario-planner.js';
+export { evaluateOutputs } from './intelligence/output-evaluator.js';
+export { generateIntelligentTests } from './generation/intelligent-generator.js';
+export { runFullPipeline } from './pipeline/orchestrator.js';
+
+export { LLMCache } from './intelligence/llm-cache.js';
+export { createLLMClient } from './intelligence/llm-factory.js';
+export { AnthropicClient } from './intelligence/llm-providers/anthropic.js';
+export { OpenAIClient } from './intelligence/llm-providers/openai.js';
+
 export type * from './config/types.js';
+export type * from './intelligence/types.js';
+export type { LLMClient, LLMConfig } from './intelligence/llm-client.js';
+export type { OutputEvaluation } from './intelligence/output-evaluator.js';
+export type { PipelineResult } from './pipeline/orchestrator.js';

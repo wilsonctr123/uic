@@ -6,7 +6,7 @@
  */
 
 import { readFileSync, existsSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { resolve, join, dirname } from 'node:path';
 import type { UicConfig } from './types.js';
 
 /**
@@ -39,7 +39,7 @@ const DEFAULT_CONFIG: Partial<UicConfig> = {
   discovery: {
     seedRoutes: ['/'],
     maxDepth: 3,
-    waitAfterNavigation: 1000,
+    waitAfterNavigation: 500,
     viewportWidth: 1440,
     viewportHeight: 900,
     screenshots: true,
@@ -56,8 +56,19 @@ const DEFAULT_CONFIG: Partial<UicConfig> = {
  * Resolve environment variable references like ${ENV_VAR} in strings.
  */
 function interpolateEnvVars(value: string): string {
-  return value.replace(/\$\{([^}]+)\}/g, (_, envVar) => {
-    return process.env[envVar] || '';
+  return value.replace(/\$\{([^}]+)\}/g, (match, envVar) => {
+    const val = process.env[envVar];
+    if (val === undefined) {
+      const sensitivePatterns = ['PASSWORD', 'KEY', 'SECRET', 'TOKEN'];
+      const isSensitive = sensitivePatterns.some(p => envVar.toUpperCase().includes(p));
+      if (isSensitive) {
+        console.error(`ERROR: Required env var \${${envVar}} is not set (contains sensitive credential)`);
+      } else {
+        console.warn(`WARNING: Env var \${${envVar}} is not set, defaulting to empty string`);
+      }
+      return '';
+    }
+    return val;
   });
 }
 
@@ -101,25 +112,36 @@ export async function loadConfig(projectRoot: string): Promise<UicConfig> {
   // Load .env before anything else so ${ENV_VAR} interpolation works
   loadDotEnv(projectRoot);
 
-  const configPaths = [
-    join(projectRoot, 'uic.config.ts'),
-    join(projectRoot, 'uic.config.js'),
-    join(projectRoot, 'uic.config.mjs'),
-    join(projectRoot, '.uic/config.ts'),
-    join(projectRoot, '.uic/config.js'),
+  const configNames = [
+    'uic.config.ts',
+    'uic.config.js',
+    'uic.config.mjs',
+    '.uic/config.ts',
+    '.uic/config.js',
   ];
 
+  // Search current dir, then walk up parent directories (like package.json resolution)
   let configPath: string | undefined;
-  for (const p of configPaths) {
-    if (existsSync(p)) {
-      configPath = p;
-      break;
+  const searchedDirs: string[] = [];
+  let searchDir = projectRoot;
+  for (let depth = 0; depth < 10; depth++) {
+    searchedDirs.push(searchDir);
+    for (const name of configNames) {
+      const candidate = join(searchDir, name);
+      if (existsSync(candidate)) {
+        configPath = candidate;
+        break;
+      }
     }
+    if (configPath) break;
+    const parent = dirname(searchDir);
+    if (parent === searchDir) break; // filesystem root
+    searchDir = parent;
   }
 
   if (!configPath) {
     console.error('No uic config file found. Run `uic init` to create one.');
-    console.error('Searched:', configPaths.join(', '));
+    console.error('Searched:', searchedDirs.map(d => configNames.map(n => join(d, n))).flat().join(', '));
     process.exit(1);
   }
 

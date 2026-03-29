@@ -25,14 +25,24 @@ export function getWidgetAdapter(aff: Affordance): string | null {
   // ── File upload via native input ──
   if (aff.elementType === 'file-input') {
     const locator = `page.locator('input[type="file"]').nth(${getFileInputIndex(aff)})`;
-    const mimeType = aff.route === '/import' && aff.label?.includes('email')
-      ? "'message/rfc822'" : "'text/plain'";
-    const fileName = aff.route === '/import' ? "'test.eml'" : "'test-file.txt'";
+    // Infer file type from affordance label/name hints; default to generic binary
+    const labelHint = (aff.label || aff.target.name || '').toLowerCase();
+    let mimeType = "'application/octet-stream'";
+    let fileName = "'test-file.txt'";
+    if (labelHint.includes('image') || labelHint.includes('photo')) {
+      mimeType = "'image/png'"; fileName = "'test-image.png'";
+    } else if (labelHint.includes('pdf') || labelHint.includes('document')) {
+      mimeType = "'application/pdf'"; fileName = "'test-document.pdf'";
+    } else if (labelHint.includes('csv') || labelHint.includes('spreadsheet')) {
+      mimeType = "'text/csv'"; fileName = "'test-data.csv'";
+    } else if (labelHint.includes('text') || labelHint.includes('plain')) {
+      mimeType = "'text/plain'"; fileName = "'test-file.txt'";
+    }
     return `    // File upload via native input (not drag-drop)\n` +
            `    await ${locator}.setInputFiles({\n` +
            `      name: ${fileName},\n` +
            `      mimeType: ${mimeType},\n` +
-           `      buffer: Buffer.from('From: test@test.com\\nSubject: Test\\n\\nBody'),\n` +
+           `      buffer: Buffer.from('test file content'),\n` +
            `    });`;
   }
 
@@ -56,18 +66,22 @@ export function getWidgetAdapter(aff: Affordance): string | null {
 }
 
 // ── Helper: detect filter chips ──
+// Detect chips by DOM structure and behavior, not hardcoded label text.
+// A chip is a short-labeled button that toggles state (attribute-changes oracle)
+// or lives among a group of similar small buttons.
 function isFilterChip(aff: Affordance): boolean {
   if (aff.elementType !== 'button') return false;
-  const label = (aff.label || '').toLowerCase();
-  // Short labels that are typically filter chips
-  const chipPatterns = [
-    'hybrid', 'keyword', 'semantic',  // search mode
-    'all', 'open', 'in progress', 'done',  // task status
-    'all priorities', 'high', 'medium', 'low',  // task priority
-    'ask', 'search', 'triage', 'agent',  // home mode
-    'quick', 'deep think',  // depth mode
-  ];
-  return chipPatterns.some(p => label.includes(p)) || aff.oracle === 'attribute-changes';
+  const label = (aff.label || '').trim();
+  // Chips have short labels (typically 1-3 words, under 20 chars)
+  const isShortLabel = label.length > 0 && label.length <= 20 && label.split(/\s+/).length <= 3;
+  // If the oracle indicates attribute/state change, it's likely a toggle chip
+  if (aff.oracle === 'attribute-changes' && isShortLabel) return true;
+  // If the affordance has a chip-like role or is in a group with attribute-changes oracle
+  if (isShortLabel && aff.target.role === 'button' && aff.action === 'click') {
+    // Heuristic: buttons with very short labels that only toggle state
+    return aff.oracle === 'attribute-changes' || aff.oracle === 'no-crash';
+  }
+  return false;
 }
 
 // ── Helper: detect chat/search inputs ──

@@ -8,9 +8,26 @@
 
 export interface UicConfig {
   app: AppConfig;
+  /** Multiple services to start in dependency order (replaces app.startCommand) */
+  services?: ServiceConfig[];
+  /** Pre-flight environment checks — run before service startup */
+  preflight?: PreflightConfig;
+  /** Data seeding — run after auth, before discovery */
+  seeding?: SeedConfig;
   auth?: AuthConfig;
   discovery: DiscoveryConfig;
   contract?: ContractConfig;
+  /** User journey definitions for multi-step flow tests */
+  journeys?: JourneyConfig[];
+  /** Observation configuration for semantic interaction layer */
+  observe?: ObserveConfig;
+  /** LLM configuration for Claude-powered app understanding */
+  llm?: {
+    provider: 'anthropic' | 'openai';
+    apiKey?: string;
+    model?: string;
+    baseUrl?: string;
+  };
   exclusions?: Exclusion[];
 }
 
@@ -27,6 +44,103 @@ export interface AppConfig {
   startTimeout?: number;
 }
 
+// ── Multi-Service Types ────────────────────────────────────
+
+export interface ServiceConfig {
+  /** Display name for logging */
+  name: string;
+  /** Shell command to start the service */
+  command: string;
+  /** Port the service listens on */
+  port: number;
+  /** Health check path — appended to http://localhost:{port} */
+  healthCheck: string;
+  /** Working directory relative to project root */
+  cwd?: string;
+  /** Extra environment variables for this service */
+  env?: Record<string, string>;
+  /** Max startup time in ms (default: 30000) */
+  startTimeout?: number;
+  /** Names of services that must be healthy before this one starts */
+  dependsOn?: string[];
+  /** Command to run if the main command fails (e.g., install deps) */
+  installCommand?: string;
+}
+
+// ── Pre-flight Types ───────────────────────────────────────
+
+export interface PreflightConfig {
+  checks: PreflightCheck[];
+}
+
+export interface PreflightCheck {
+  /** Human-readable name */
+  name: string;
+  /** Shell command — exit 0 means pass */
+  test: string;
+  /** Shell command to auto-fix if test fails */
+  fix?: string;
+  /** Fail the pipeline if both test and fix fail (default: true) */
+  required?: boolean;
+}
+
+// ── Seeding Types ──────────────────────────────────────────
+
+export interface SeedConfig {
+  /** API calls to seed data (executed in order) */
+  apiCalls?: SeedApiCall[];
+  /** Directory containing fixture files to upload */
+  fixtureDir?: string;
+  /** Upload endpoint for fixture files (required if fixtureDir is set) */
+  fixtureUploadEndpoint?: string;
+  /** Form field name for file uploads (default: 'file') */
+  fixtureFieldName?: string;
+  /** Shell script to run for seeding */
+  script?: string;
+}
+
+export interface SeedApiCall {
+  method: 'POST' | 'PUT' | 'PATCH';
+  /** API path (appended to app.baseUrl) */
+  endpoint: string;
+  /** Request body */
+  body: Record<string, unknown>;
+  /** Whether this call needs the authenticated session cookie */
+  authenticated: boolean;
+  /** Human-readable description */
+  description?: string;
+}
+
+// ── Journey Types ──────────────────────────────────────────
+
+export interface JourneyConfig {
+  /** Unique journey ID */
+  id: string;
+  /** Human-readable name */
+  name: string;
+  /** Which persona executes this journey */
+  persona: string;
+  /** Whether this journey is required to pass the gate */
+  required: boolean;
+  /** Ordered steps */
+  steps: JourneyStep[];
+}
+
+export interface JourneyStep {
+  action: 'goto' | 'click' | 'fill' | 'upload' | 'wait'
+    | 'assert-visible' | 'assert-hidden' | 'assert-url' | 'assert-text';
+  /** Human-readable description of what this step does */
+  description?: string;
+  /** Selector, role-based locator string, or URL */
+  target?: string;
+  /** Value for fill/assert-text/assert-url */
+  value?: string;
+  /** Step timeout in ms */
+  timeout?: number;
+}
+
+// ── Auth Types ─────────────────────────────────────────────
+
 export interface AuthConfig {
   /** Authentication strategy */
   strategy: 'storage-state' | 'ui-flow' | 'api-bootstrap' | 'custom';
@@ -34,6 +148,14 @@ export interface AuthConfig {
   personas?: Record<string, PersonaConfig>;
   /** Path to custom auth hook module (for 'custom' strategy) */
   customHook?: string;
+  /** URL patterns that indicate a login/auth page (default: ['/login', '/signin', '/auth']) */
+  loginPatterns?: string[];
+  /** API endpoints whose errors should be ignored during testing (e.g., auth probes) */
+  ignoredEndpoints?: string[];
+  /** Auth header format: 'cookie' (default) or 'bearer' */
+  headerFormat?: 'cookie' | 'bearer';
+  /** Submit button patterns for UI-flow login (default: /sign in|log in|submit|continue/i) */
+  submitButtonPattern?: string;
 }
 
 export interface PersonaConfig {
@@ -49,6 +171,10 @@ export interface PersonaConfig {
   loginSteps?: LoginStep[];
   /** Additional data to send with API login */
   loginData?: Record<string, string>;
+  /** Signup endpoint for api-bootstrap fallback (omit to disable auto-signup) */
+  signupEndpoint?: string;
+  /** Custom signup request body (default: uses email + password from persona) */
+  signupBody?: Record<string, unknown>;
 }
 
 export interface LoginStep {
@@ -74,6 +200,12 @@ export interface DiscoveryConfig {
   viewportHeight?: number;
   /** Whether to take screenshots during discovery */
   screenshots?: boolean;
+  /** Routes that are public (no auth required). Default: login/signup/forgot/reset patterns */
+  publicRoutes?: string[];
+  /** Page load wait strategy (default: 'domcontentloaded'). Use 'networkidle' only for static sites */
+  waitUntil?: 'load' | 'domcontentloaded' | 'networkidle' | 'commit';
+  /** Landmark element to verify authenticated pages loaded (default: none — skip check) */
+  authLandmark?: string;
 }
 
 export interface ContractConfig {
@@ -121,6 +253,8 @@ export interface DiscoveredRoute {
   confidence: 'high' | 'medium' | 'low';
   discoveredAt: string;
   notes: string[];
+  /** Element groupings discovered during crawl */
+  interactionGroups?: ElementGrouping[];
 }
 
 export interface DiscoveredElement {
@@ -351,4 +485,231 @@ export interface AffordanceLedger {
     excluded: number;
   }>;
   affordances: Affordance[];
+}
+
+// ── Semantic Interaction Layer Types (v4) ────────────────
+
+/** Recognized page-level interaction patterns */
+export type InteractionPattern =
+  | 'chat'             // input → submit → response appended
+  | 'search'           // query → submit → results list replaces
+  | 'form-submit'      // fill fields → submit → confirmation/redirect
+  | 'list-filter'      // filter controls → list updates in place
+  | 'wizard'           // step form → next → new step form
+  | 'auth-flow'        // credentials → submit → redirect
+  | 'crud-create'      // fill → submit → item appears in list
+  | 'toggle-panel'     // button → content panel shows/hides
+  | 'modal-dialog'     // trigger → modal opens → interact → close
+  | 'pagination'       // nav controls → content replaces
+  | 'unknown';         // grouped but pattern not recognized
+
+/** A region of the page where output appears after an interaction */
+export interface OutputZone {
+  /** CSS selector for the zone */
+  selector: string;
+  /** What kind of content appears here */
+  type: 'append' | 'replace' | 'count-change' | 'text-change' | 'visibility-toggle';
+  /** Selector for individual items within the zone (for lists, tables) */
+  itemSelector?: string;
+  /** How this zone was identified */
+  source: 'dom-proximity' | 'aria-relationship' | 'observation' | 'heuristic';
+}
+
+/** Lightweight grouping data from the discovery phase */
+export interface ElementGrouping {
+  /** Unique group ID */
+  id: string;
+  /** Container CSS selector */
+  containerSelector: string;
+  /** Selectors of member elements */
+  memberSelectors: string[];
+  /** Bounding box of the container */
+  boundingBox: { x: number; y: number; width: number; height: number };
+  /** ARIA relationships discovered */
+  ariaRelationships: Array<{ from: string; to: string; type: string }>;
+}
+
+/** A group of related elements that form a functional unit */
+export interface InteractionGroup {
+  id: string;
+  route: string;
+  pattern: InteractionPattern;
+  confidence: 'high' | 'medium' | 'low';
+  /** The elements that comprise this group, by role in the pattern */
+  members: {
+    inputs: string[];     // affordance IDs
+    triggers: string[];   // affordance IDs
+    outputs: OutputZone[];
+  };
+  /** Container selector that encloses all members */
+  containerSelector?: string;
+  /** Observed behavior from probing (filled after observation phase) */
+  observation?: InteractionObservation;
+}
+
+/** Result of probing the live DOM after performing an interaction */
+export interface InteractionObservation {
+  /** What DOM mutations were observed */
+  mutations: ObservedMutation[];
+  /** Network requests fired */
+  networkRequests: ObservedRequest[];
+  /** How long until changes stabilized (ms) */
+  settleTime: number;
+  /** Whether the URL changed */
+  urlChanged: boolean;
+  newUrl?: string;
+  /** Snapshot of output zone content before and after */
+  outputDelta?: {
+    before: string;
+    after: string;
+    itemCountBefore: number;
+    itemCountAfter: number;
+  };
+  /** Screenshot paths */
+  screenshotBefore?: string;
+  screenshotAfter?: string;
+  /** Prerequisite discovered and executed before main interaction */
+  prerequisite?: PrerequisiteResult;
+  /** Quality score for this observation */
+  qualityScore?: InteractionQualityScore;
+}
+
+/** Result of trying a prerequisite activation before the main interaction */
+export interface PrerequisiteResult {
+  /** What action was taken */
+  action: 'click';
+  /** CSS selector of the activation element */
+  selector: string;
+  /** Visible text/label of the activation element */
+  label: string;
+  /** What changed after clicking */
+  effect: string;
+  /** Whether the original interaction succeeded after this prerequisite */
+  succeeded: boolean;
+  /** The observation from the retried interaction (if succeeded) */
+  observation?: InteractionObservation;
+}
+
+/** Interaction quality score with breakdown */
+export interface InteractionQualityScore {
+  /** Overall score 0-10 */
+  score: number;
+  /** Human-readable band */
+  band: 'blocked' | 'no-effect' | 'superficial' | 'client-only' | 'real' | 'verified';
+  /** Individual signal scores */
+  signals: {
+    attempted: boolean;
+    mutationCount: number;
+    networkRequestCount: number;
+    outputChanged: boolean;
+    outputLengthDelta: number;
+    itemCountDelta: number;
+    hasErrorIndicator: boolean;
+    urlChanged: boolean;
+  };
+}
+
+/** Per-test evidence for the comprehensive report */
+export interface TestEvidence {
+  testId: string;
+  testName: string;
+  route: string;
+  pattern?: InteractionPattern;
+  input?: string;
+  action: string;
+  prerequisitesUsed?: PrerequisiteResult[];
+  observation?: {
+    mutationCount: number;
+    networkRequests: string[];
+    settleTime: number;
+    outputBefore?: string;
+    outputAfter?: string;
+  };
+  qualityScore: InteractionQualityScore;
+  claudeJudgment?: {
+    verdict: 'pass' | 'weak' | 'fail';
+    reasoning: string;
+  };
+  result: 'pass' | 'fail' | 'skip';
+  resultReason?: string;
+}
+
+export interface ObservedMutation {
+  type: 'childList' | 'attributes' | 'characterData';
+  targetSelector: string;
+  addedCount: number;
+  removedCount: number;
+  attributeName?: string;
+}
+
+export interface ObservedRequest {
+  url: string;
+  method: string;
+  status: number;
+  contentType?: string;
+}
+
+/** Validation result from output judging */
+export interface ValidationResult {
+  passed: boolean;
+  confidence: 'high' | 'medium' | 'low';
+  method: 'heuristic' | 'screenshot-llm' | 'text-llm';
+  issues: string[];
+  screenshot?: string;
+}
+
+/** A composite test that exercises an interaction group end-to-end */
+export interface CompositeTest {
+  id: string;
+  groupId: string;
+  route: string;
+  pattern: InteractionPattern;
+  name: string;
+  steps: CompositeTestStep[];
+  observationBased: boolean;
+}
+
+export interface CompositeTestStep {
+  action: 'goto' | 'fill' | 'click' | 'press-key' | 'wait-for-selector'
+    | 'wait-for-response' | 'wait-for-mutation' | 'assert-visible'
+    | 'assert-text-changed' | 'assert-count-changed' | 'assert-url'
+    | 'assert-element-appeared' | 'assert-no-error';
+  target?: string;
+  value?: string;
+  timeout?: number;
+  description: string;
+}
+
+/** Extended ledger that includes interaction groups */
+export interface SemanticLedger extends AffordanceLedger {
+  interactionGroups: InteractionGroup[];
+  compositeTests: CompositeTest[];
+  semanticSummary: {
+    totalGroups: number;
+    patterns: Partial<Record<InteractionPattern, number>>;
+    observedGroups: number;
+    compositeTestsGenerated: number;
+  };
+}
+
+/** Observation configuration */
+export interface ObserveConfig {
+  /** Enable observation during discovery (default: false) */
+  enabled: boolean;
+  /** Max interaction groups to observe per run (default: 50) */
+  budget?: number;
+  /** Times to repeat each observation for stability (default: 2) */
+  repetitions?: number;
+  /** Skip mutating elements during observation (default: true) */
+  blockMutating?: boolean;
+  /** Enable LLM-based output validation via screenshots (default: false) */
+  llmValidation?: boolean;
+  /** Custom error text patterns to detect */
+  errorPatterns?: string[];
+  /** Take before/after screenshots during observation (default: true) */
+  screenshots?: boolean;
+  /** Enable prerequisite exploration for no-effect interactions (default: true) */
+  prerequisiteExploration?: boolean;
+  /** Max prerequisite attempts per group (default: 5) */
+  maxPrerequisiteAttempts?: number;
 }

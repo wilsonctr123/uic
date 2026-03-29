@@ -50,7 +50,7 @@ function generateSurfaceTest(surface: Surface): string {
 
   return `  test('${routeName} page loads successfully', async ({ page }) => {
     await page.goto('${surface.route}');
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState('domcontentloaded');
 ${navCheck}
 ${requiredElements}
 
@@ -119,7 +119,7 @@ setup('authenticate', async ({ page }) => {
   fs.mkdirSync(path.dirname(authFile), { recursive: true });
 
   await page.goto('/login');
-  await page.waitForLoadState('networkidle');
+  await page.waitForLoadState('domcontentloaded');
   await page.getByRole('textbox', { name: /email/i }).fill(email);
   await page.getByRole('textbox', { name: /password/i }).fill(password);
   await page.getByRole('button', { name: /sign in/i }).click();

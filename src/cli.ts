@@ -3,6 +3,8 @@
  * UIC CLI — Browser-First UI Coverage Enforcement
  *
  * Commands:
+ *   uic               Run full pipeline (default — same as `uic run`)
+ *   uic run           Run full pipeline: understand → discover → contract → test → evaluate → gate
  *   uic init          Scaffold config, detect framework
  *   uic discover      Run browser discovery against running app
  *   uic contract gen  Generate contract from inventory
@@ -28,7 +30,15 @@ import { generateTests } from './runner/test-generator.js';
 import { classifyAffordances } from './affordance/classifier.js';
 import { buildLedger, writeLedger } from './affordance/ledger.js';
 import { generateInteractionTests } from './generation/primitive-generator.js';
-import { ensureServerRunning, stopServer, type ServerStartResult } from './utils/server.js';
+import { ensureServerRunning, stopServer, ensureAllServicesRunning, stopAllServices, type ServerStartResult, type MultiServiceResult } from './utils/server.js';
+import { runPreflight } from './utils/preflight.js';
+import { seedData } from './utils/seeder.js';
+import { generateJourneyTests } from './generation/journey-generator.js';
+import { classifyPattern } from './semantic/pattern-classifier.js';
+import { observeAllGroups } from './semantic/observer.js';
+import { generateCompositeTests } from './semantic/composite-generator.js';
+import { generateEvidenceReport, formatEvidenceMarkdown } from './reporting/evidence-reporter.js';
+import type { InteractionGroup, ElementGrouping } from './config/types.js';
 import { diagnoseAllFailures } from './repair/diagnoser.js';
 import type { Diagnosis } from './repair/diagnoser.js';
 import { synthesizePreconditions } from './repair/precondition-synthesizer.js';
@@ -124,28 +134,53 @@ program
   .description('Run browser discovery against the running app')
   .option('--persona <name>', 'Authenticate as persona before discovery', 'user')
   .option('--no-start', 'Do not auto-start the dev server')
+  .option('--skip-services', 'Skip service startup (use when services are already running)')
   .action(async (opts) => {
     const cwd = process.cwd();
     const config = await loadConfig(cwd);
     const paths = getArtifactPaths(cwd, config);
-
-    // Auto-start the app if not running
+    let multiResult: MultiServiceResult | undefined;
     let serverResult: ServerStartResult | undefined;
-    if (opts.start !== false) {
-      serverResult = await ensureServerRunning(
-        config.app.baseUrl,
-        config.app.startCommand,
-        config.app.startTimeout || 30000,
-        cwd,
-      );
-      if (!serverResult.alreadyRunning && !serverResult.started) {
-        console.error(`❌ ${serverResult.error}`);
+
+    const skipServices = opts.skipServices || process.env.UIC_SKIP_SERVICES === '1';
+
+    // Pre-flight checks
+    if (config.preflight) {
+      const pf = await runPreflight(config.preflight, cwd);
+      if (!pf.passed) {
+        console.error('❌ Pre-flight checks failed. Fix the issues above and retry.');
         process.exit(1);
       }
     }
 
+    // Auto-start services (skip if --skip-services or UIC_SKIP_SERVICES=1)
+    if (opts.start !== false && !skipServices) {
+      if (config.services && config.services.length > 0) {
+        multiResult = await ensureAllServicesRunning(config.services, cwd);
+        if (!multiResult.allHealthy) {
+          console.error('❌ Service startup failed:');
+          for (const err of multiResult.errors) console.error(`   ${err}`);
+          process.exit(1);
+        }
+      } else {
+        serverResult = await ensureServerRunning(
+          config.app.baseUrl,
+          config.app.startCommand,
+          config.app.startTimeout || 30000,
+          cwd,
+        );
+        if (!serverResult.alreadyRunning && !serverResult.started) {
+          console.error(`❌ ${serverResult.error}`);
+          process.exit(1);
+        }
+      }
+    } else if (skipServices) {
+      console.log('  Skipping service startup (--skip-services or UIC_SKIP_SERVICES=1)');
+    }
+
     try {
       let authContext;
+      let authCookie: string | undefined;
       if (config.auth && opts.persona !== 'guest') {
         console.log(`🔐 Authenticating as "${opts.persona}"...`);
         const authResult = await authenticatePersona(
@@ -153,6 +188,7 @@ program
         );
         if (authResult.success) {
           authContext = authResult.context;
+          authCookie = authResult.cookie;
           console.log(`   ✓ Authenticated as ${opts.persona}`);
         } else {
           console.warn(`   ⚠ Auth failed: ${authResult.error}`);
@@ -160,10 +196,16 @@ program
         }
       }
 
+      // Seed data before discovery so pages aren't empty
+      if (config.seeding) {
+        await seedData(config.seeding, config.app.baseUrl, authCookie, cwd);
+      }
+
       await discover({ config, projectRoot: cwd, authenticatedContext: authContext });
     } finally {
-      // Stop server if we started it
-      if (serverResult?.started) {
+      if (multiResult) {
+        stopAllServices();
+      } else if (serverResult?.started) {
         stopServer(serverResult);
       }
     }
@@ -268,10 +310,14 @@ testCmd
   .description('Generate Playwright tests from affordance ledger')
   .option('--output <dir>', 'Output directory for test files', 'tests/e2e')
   .option('--legacy', 'Use v1 generator (contract-based, not affordance-based)')
+  .option('--force', 'Overwrite existing test files (default: skip existing)')
   .action(async (opts) => {
     const cwd = process.cwd();
     const config = await loadConfig(cwd);
     const paths = getArtifactPaths(cwd, config);
+
+    // Default behavior: --no-overwrite (skip existing files). Use --force to overwrite.
+    const noOverwrite = !opts.force;
 
     if (opts.legacy) {
       // v1 fallback
@@ -294,7 +340,7 @@ testCmd
 
     const ledger: AffordanceLedger = JSON.parse(readFileSync(ledgerPath, 'utf-8'));
     const outputDir = resolve(cwd, opts.output);
-    generateInteractionTests(ledger, config, outputDir);
+    generateInteractionTests(ledger, config, outputDir, { noOverwrite });
   });
 
 testCmd
@@ -305,32 +351,242 @@ testCmd
   .action(async (opts) => {
     const cwd = process.cwd();
     const config = await loadConfig(cwd);
-
-    // Auto-start the app if not running
+    let multiResult: MultiServiceResult | undefined;
     let serverResult: ServerStartResult | undefined;
+
+    // Auto-start services
     if (opts.start !== false) {
-      serverResult = await ensureServerRunning(
-        config.app.baseUrl,
-        config.app.startCommand,
-        config.app.startTimeout || 30000,
-        cwd,
-      );
-      if (!serverResult.alreadyRunning && !serverResult.started) {
-        console.error(`❌ ${serverResult.error}`);
-        process.exit(1);
+      if (config.services && config.services.length > 0) {
+        multiResult = await ensureAllServicesRunning(config.services, cwd);
+        if (!multiResult.allHealthy) {
+          console.error('❌ Service startup failed:');
+          for (const err of multiResult.errors) console.error(`   ${err}`);
+          process.exit(1);
+        }
+      } else {
+        serverResult = await ensureServerRunning(
+          config.app.baseUrl,
+          config.app.startCommand,
+          config.app.startTimeout || 30000,
+          cwd,
+        );
+        if (!serverResult.alreadyRunning && !serverResult.started) {
+          console.error(`❌ ${serverResult.error}`);
+          process.exit(1);
+        }
       }
     }
 
     try {
       const { execSync } = await import('node:child_process');
       const args = opts.headed ? '--headed' : '';
-      execSync(`npx playwright test ${args}`, { stdio: 'inherit', cwd });
+      execSync(`npx playwright test ${args} --reporter=json --reporter=list`, {
+        stdio: 'inherit',
+        cwd,
+        env: { ...process.env, PLAYWRIGHT_JSON_OUTPUT_NAME: '.uic/test-results.json' },
+      });
     } catch {
       process.exit(1);
     } finally {
-      if (serverResult?.started) {
+      if (multiResult) {
+        stopAllServices();
+      } else if (serverResult?.started) {
         stopServer(serverResult);
       }
+    }
+  });
+
+// ── uic seed ─────────────────────────────────────────────────
+program
+  .command('seed')
+  .description('Seed the application with test data')
+  .option('--no-start', 'Do not auto-start services')
+  .action(async (opts) => {
+    const cwd = process.cwd();
+    const config = await loadConfig(cwd);
+    const paths = getArtifactPaths(cwd, config);
+
+    if (!config.seeding) {
+      console.error('No seeding config found in uic.config.ts');
+      process.exit(1);
+    }
+
+    let multiResult: MultiServiceResult | undefined;
+    let serverResult: ServerStartResult | undefined;
+
+    // Start services if needed
+    if (opts.start !== false) {
+      if (config.services && config.services.length > 0) {
+        multiResult = await ensureAllServicesRunning(config.services, cwd);
+        if (!multiResult.allHealthy) {
+          console.error('❌ Service startup failed:');
+          for (const err of multiResult.errors) console.error(`   ${err}`);
+          process.exit(1);
+        }
+      } else if (config.app.startCommand) {
+        serverResult = await ensureServerRunning(
+          config.app.baseUrl, config.app.startCommand, config.app.startTimeout || 30000, cwd,
+        );
+      }
+    }
+
+    try {
+      // Authenticate first
+      let authCookie: string | undefined;
+      if (config.auth) {
+        const persona = Object.keys(config.auth.personas || {})[0] || 'user';
+        const authResult = await authenticatePersona(
+          config.app.baseUrl, persona, config.auth, paths.authDir,
+        );
+        if (authResult.success) {
+          authCookie = authResult.cookie;
+        }
+      }
+
+      const result = await seedData(config.seeding, config.app.baseUrl, authCookie, cwd);
+      process.exit(result.success ? 0 : 1);
+    } finally {
+      if (multiResult) stopAllServices();
+      else if (serverResult?.started) stopServer(serverResult);
+    }
+  });
+
+// ── uic journey gen ──────────────────────────────────────────
+const journeyCmd = program
+  .command('journey')
+  .description('User journey test management');
+
+journeyCmd
+  .command('generate')
+  .alias('gen')
+  .description('Generate Playwright journey tests from config')
+  .option('--output <dir>', 'Output directory', 'tests/e2e')
+  .option('--no-overwrite', 'Skip generation if journeys.spec.ts already exists')
+  .option('--force', 'Overwrite existing journeys.spec.ts')
+  .action(async (opts) => {
+    const cwd = process.cwd();
+    const config = await loadConfig(cwd);
+    const outputDir = resolve(cwd, opts.output);
+
+    // --no-overwrite: skip if file already exists (unless --force)
+    const journeyFile = join(outputDir, 'journeys.spec.ts');
+    if (opts.overwrite === false && !opts.force && existsSync(journeyFile)) {
+      console.log('⏭ Skipping journeys.spec.ts (exists, use --force to regenerate)');
+      return;
+    }
+
+    const journeys = config.journeys || [];
+    if (journeys.length === 0) {
+      console.log('No journeys defined in uic.config.ts. Skipping journey generation.');
+      return;
+    }
+
+    const result = generateJourneyTests(journeys, config, outputDir, { noOverwrite: opts.overwrite === false && !opts.force });
+    console.log(`\n🗺️ Generated ${result.journeyCount} journey tests (${result.stepCount} steps)`);
+    console.log(`   → ${result.testFile}\n`);
+  });
+
+// ── uic observe ──────────────────────────────────────────────
+program
+  .command('observe')
+  .description('Observe live DOM changes when interacting with discovered elements')
+  .option('--budget <n>', 'Max groups to observe', '50')
+  .option('--no-start', 'Do not auto-start services')
+  .action(async (opts) => {
+    const cwd = process.cwd();
+    const config = await loadConfig(cwd);
+    const paths = getArtifactPaths(cwd, config);
+
+    if (!existsSync(paths.inventory)) {
+      console.error('No inventory found. Run: uic discover');
+      process.exit(1);
+    }
+
+    const inventory: UIInventory = JSON.parse(readFileSync(paths.inventory, 'utf-8'));
+    const ledgerPath = resolve(cwd, '.uic/ledger.json');
+
+    // Build interaction groups from inventory
+    const groups: InteractionGroup[] = [];
+    for (const route of inventory.routes) {
+      if (!route.interactionGroups) continue;
+      for (const eg of route.interactionGroups) {
+        const pattern = classifyPattern(eg, route.elements, route);
+        groups.push({
+          id: eg.id,
+          route: route.path,
+          pattern: pattern.pattern,
+          confidence: pattern.confidence,
+          members: {
+            inputs: eg.memberSelectors.filter(s =>
+              route.elements.some(e => e.selector === s && ['text-input', 'email-input', 'search-input', 'textarea', 'password-input'].includes(e.classification))
+            ),
+            triggers: eg.memberSelectors.filter(s =>
+              route.elements.some(e => e.selector === s && ['button'].includes(e.classification))
+            ),
+            outputs: [],
+          },
+          containerSelector: eg.containerSelector,
+        });
+      }
+    }
+
+    if (groups.length === 0) {
+      console.log('No interaction groups found. Run: uic discover');
+      return;
+    }
+
+    console.log(`\n👁️ Observing ${groups.length} interaction groups\n`);
+
+    // Start services
+    let multiResult: MultiServiceResult | undefined;
+    let serverResult: ServerStartResult | undefined;
+    if (opts.start !== false) {
+      if (config.services && config.services.length > 0) {
+        multiResult = await ensureAllServicesRunning(config.services, cwd);
+        if (!multiResult.allHealthy) {
+          console.error('❌ Service startup failed');
+          process.exit(1);
+        }
+      } else if (config.app.startCommand) {
+        serverResult = await ensureServerRunning(config.app.baseUrl, config.app.startCommand, config.app.startTimeout || 30000, cwd);
+      }
+    }
+
+    try {
+      // Use Playwright to observe
+      const { chromium } = await import('playwright');
+      const browser = await chromium.launch({ headless: true });
+      const context = await browser.newContext();
+
+      const observations = await observeAllGroups(context, groups, config, cwd);
+
+      console.log(`\n📊 Observed ${observations.size} groups`);
+      for (const [id, obs] of observations) {
+        console.log(`   ${id}: ${obs.mutations.length} mutations, ${obs.networkRequests.length} requests, settled in ${obs.settleTime}ms`);
+      }
+
+      // Save observations to ledger
+      const observedLedgerPath = resolve(cwd, '.uic/observed-groups.json');
+      const groupsWithObs = groups.map(g => ({
+        ...g,
+        observation: observations.get(g.id),
+      }));
+      writeFileSync(observedLedgerPath, JSON.stringify(groupsWithObs, null, 2));
+      console.log(`\n📄 → .uic/observed-groups.json\n`);
+
+      // Generate composite tests
+      const outputDir = resolve(cwd, 'tests/e2e');
+      const result = generateCompositeTests(groupsWithObs, config, outputDir);
+      if (result.testCount > 0) {
+        console.log(`🧪 Generated ${result.testCount} composite tests (${result.observationBased} observation-based, ${result.heuristicBased} heuristic)`);
+        console.log(`   → ${result.testFile}\n`);
+      }
+
+      await context.close();
+      await browser.close();
+    } finally {
+      if (multiResult) stopAllServices();
+      else if (serverResult?.started) stopServer(serverResult);
     }
   });
 
@@ -629,8 +885,22 @@ program
       // 1. Diagnose failures
       const diagnoses = diagnoseAllFailures(resultsPath);
 
-      if (diagnoses.length === 0) {
+      // Verify we actually have test results before claiming success
+      let hasResults = false;
+      try {
+        const raw = (await import('fs')).readFileSync(resultsPath, 'utf-8');
+        const data = JSON.parse(raw);
+        const total = (data.stats?.expected ?? 0) + (data.stats?.unexpected ?? 0);
+        hasResults = total > 0;
+      } catch { /* no results file */ }
+
+      if (diagnoses.length === 0 && hasResults) {
         console.log('✅ No failures to diagnose — all tests passing!');
+        break;
+      }
+      if (diagnoses.length === 0 && !hasResults) {
+        console.warn('⚠️  No test results captured — cannot determine pass/fail status.');
+        console.warn('   Run: npx playwright test --reporter=json > .uic/test-results.json');
         break;
       }
 
@@ -689,9 +959,10 @@ program
       console.log('\n🔄 Rerunning tests...');
       try {
         const { execSync } = await import('node:child_process');
-        execSync('npx playwright test', {
+        execSync('npx playwright test --reporter=json --reporter=list', {
           stdio: ['pipe', 'pipe', 'pipe'],
           cwd,
+          env: { ...process.env, PLAYWRIGHT_JSON_OUTPUT_NAME: '.uic/test-results.json' },
         });
       } catch {
         // Test failures are expected — we read results from file
@@ -783,6 +1054,7 @@ program
   .command('gate')
   .description('Check UI coverage against contract — exit 0 (pass) or 1 (fail)')
   .option('--strict', 'Fail on warnings too')
+  .option('--quality-threshold <n>', 'Minimum average quality score (0-10)', '0')
   .action(async (opts) => {
     const cwd = process.cwd();
     const config = await loadConfig(cwd);
@@ -804,6 +1076,27 @@ program
     }
 
     const report = checkCoverage(contract, testResults, inventory, opts.strict, ledger);
+
+    // Quality threshold check
+    const qualityThreshold = parseFloat(opts.qualityThreshold);
+    if (qualityThreshold > 0) {
+      const evidencePath = resolve(cwd, '.uic/evidence-report.json');
+      if (existsSync(evidencePath)) {
+        const evidence = JSON.parse(readFileSync(evidencePath, 'utf-8'));
+        const avgQuality = evidence.summary?.averageQuality || 0;
+        if (avgQuality < qualityThreshold) {
+          report.passed = false;
+          report.issues.push({
+            type: 'missing_test' as any,
+            severity: 'error',
+            item: 'quality-threshold',
+            message: `Average quality ${avgQuality}/10 is below threshold ${qualityThreshold}/10`,
+          });
+          console.log(`\n🔴 QUALITY GATE FAILED: average quality ${avgQuality} < threshold ${qualityThreshold}\n`);
+        }
+      }
+    }
+
     printReport(report);
     writeReport(report, paths.report);
 
@@ -831,6 +1124,40 @@ program
     } else {
       printReport(report);
     }
+  });
+
+// ── uic evidence ─────────────────────────────────────────────
+program
+  .command('evidence')
+  .description('Generate comprehensive per-test evidence report')
+  .option('--format <type>', 'Output format: text, json, markdown', 'text')
+  .action(async (opts) => {
+    const cwd = process.cwd();
+    const report = generateEvidenceReport(cwd);
+    const reportDir = resolve(cwd, '.uic');
+    mkdirSync(reportDir, { recursive: true });
+    writeFileSync(resolve(reportDir, 'evidence-report.json'), JSON.stringify(report, null, 2));
+    const md = formatEvidenceMarkdown(report);
+    writeFileSync(resolve(reportDir, 'evidence-report.md'), md);
+
+    if (opts.format === 'json') {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      console.log(md);
+    }
+  });
+
+// ── uic strengthen ──────────────────────────────────────────
+program
+  .command('strengthen')
+  .description('Add quality signals to all test files')
+  .action(async () => {
+    const cwd = process.cwd();
+    const config = await loadConfig(cwd);
+    const testDir = resolve(cwd, config.testDir || 'tests/e2e');
+    const { strengthenTests } = await import('./repair/strengthener.js');
+    const result = strengthenTests(testDir);
+    console.log(`Strengthened ${result.testsStrengthened} tests in ${result.filesModified} files (+${result.signalsAdded} signals)`);
   });
 
 // ── uic doctor ──────────────────────────────────────────────
@@ -870,5 +1197,54 @@ program
     console.log(`\n${ok ? '✅ All good!' : '❌ Issues found — fix the items above.'}\n`);
     process.exit(ok ? 0 : 1);
   });
+
+// ── uic todo (show pending action items) ─────────────────
+program
+  .command('todo')
+  .description('Show pending action items from the last /uic run')
+  .action(async () => {
+    const { readFileSync, existsSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const todoPath = join(process.cwd(), '.uic', 'TODO.md');
+    if (!existsSync(todoPath)) {
+      console.log('No pending items. Run /uic first to generate a test report.');
+      process.exit(0);
+    }
+    const content = readFileSync(todoPath, 'utf-8');
+    // Count pending vs completed
+    const pending = (content.match(/Status:\*\*\s*PENDING/g) || []).length;
+    const done = (content.match(/Status:\*\*\s*DONE/g) || []).length;
+    console.log(`\n📋 UIC Action Items: ${pending} pending, ${done} completed\n`);
+    // Print pending items summary
+    const lines = content.split('\n');
+    for (const line of lines) {
+      if (line.startsWith('### ') && !line.includes('Completed')) {
+        console.log(line.replace('### ', '  '));
+      }
+    }
+    if (pending === 0) {
+      console.log('  ✅ All items resolved!');
+    } else {
+      console.log(`\n  Run /uic-followup after fixing items to verify and update the list.\n`);
+    }
+  });
+
+// ── uic run (full pipeline) ──────────────────────────────
+program
+  .command('run')
+  .description('Run the full AI-native testing pipeline (understand → discover → contract → test → evaluate → gate)')
+  .action(async () => {
+    const { runFullPipeline } = await import('./pipeline/orchestrator.js');
+    const result = await runFullPipeline(process.cwd());
+    process.exit(result.gatePassed ? 0 : 1);
+  });
+
+// Default action: run full pipeline when no subcommand is given
+program.action(async () => {
+  // If no subcommand matched, run the full pipeline
+  const { runFullPipeline } = await import('./pipeline/orchestrator.js');
+  const result = await runFullPipeline(process.cwd());
+  process.exit(result.gatePassed ? 0 : 1);
+});
 
 program.parse();

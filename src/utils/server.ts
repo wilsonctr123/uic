@@ -1,14 +1,16 @@
 /**
  * Server Launcher
  *
- * Auto-starts the dev server before discovery/testing if it's not already running.
- * Uses the startCommand and startTimeout from project config.
+ * Auto-starts dev servers before discovery/testing if not already running.
+ * Supports single-service (legacy) and multi-service with dependency ordering.
  */
 
-import { spawn, type ChildProcess } from 'node:child_process';
-import { URL } from 'node:url';
+import { spawn, execSync, type ChildProcess } from 'node:child_process';
+import { resolve } from 'node:path';
+import type { ServiceConfig } from '../config/types.js';
 
 let _serverProcess: ChildProcess | null = null;
+const _serviceProcesses = new Map<string, ChildProcess>();
 
 /**
  * Check if a URL is responding (any HTTP status counts as "up").
@@ -22,7 +24,7 @@ async function isServerUp(baseUrl: string): Promise<boolean> {
       redirect: 'follow',
     });
     clearTimeout(timeout);
-    return true;
+    return resp.status >= 200 && resp.status < 400;
   } catch {
     return false;
   }
@@ -150,4 +152,213 @@ export function stopServer(result: ServerStartResult): void {
  */
 export function getServerProcess(): ChildProcess | null {
   return _serverProcess;
+}
+
+// ── Multi-Service Support ──────────────────────────────────
+
+export interface MultiServiceResult {
+  services: Map<string, ServerStartResult>;
+  allHealthy: boolean;
+  errors: string[];
+}
+
+/**
+ * Topological sort services by dependsOn.
+ * Returns tiers: each tier's services can start after all previous tiers are healthy.
+ */
+function topoSort(services: ServiceConfig[]): ServiceConfig[][] {
+  const byName = new Map(services.map(s => [s.name, s]));
+  const resolved = new Set<string>();
+  const tiers: ServiceConfig[][] = [];
+
+  let remaining = [...services];
+  let maxIter = services.length + 1;
+  while (remaining.length > 0 && maxIter-- > 0) {
+    const tier = remaining.filter(s =>
+      !s.dependsOn || s.dependsOn.every(d => resolved.has(d))
+    );
+    if (tier.length === 0) {
+      throw new Error(
+        `Circular dependency in services: ${remaining.map(s => s.name).join(', ')}`
+      );
+    }
+    tiers.push(tier);
+    for (const s of tier) resolved.add(s.name);
+    remaining = remaining.filter(s => !resolved.has(s.name));
+  }
+  return tiers;
+}
+
+/**
+ * Start a single service, with optional install fallback.
+ */
+async function startService(
+  service: ServiceConfig,
+  projectRoot: string,
+): Promise<ServerStartResult> {
+  const healthUrl = `http://localhost:${service.port}${service.healthCheck}`;
+  const cwd = service.cwd ? resolve(projectRoot, service.cwd) : projectRoot;
+  const timeout = service.startTimeout || 30000;
+
+  // Already running?
+  if (await isServerUp(healthUrl)) {
+    console.log(`  ✓ ${service.name} already running on :${service.port}`);
+    return { alreadyRunning: true, started: false };
+  }
+
+  console.log(`  Starting ${service.name}: ${service.command}`);
+
+  // Try starting; if command not found and installCommand exists, install first
+  let child: ChildProcess;
+  try {
+    child = spawn(service.command, [], {
+      cwd,
+      shell: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
+      env: { ...process.env, ...(service.env || {}) },
+    });
+  } catch (err) {
+    if (service.installCommand) {
+      console.log(`  Installing deps for ${service.name}: ${service.installCommand}`);
+      try {
+        execSync(service.installCommand, { cwd, stdio: 'pipe', timeout: 120000 });
+      } catch (installErr) {
+        return {
+          alreadyRunning: false,
+          started: false,
+          error: `Install failed for ${service.name}: ${(installErr as Error).message}`,
+        };
+      }
+      child = spawn(service.command, [], {
+        cwd,
+        shell: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: true,
+        env: { ...process.env, ...(service.env || {}) },
+      });
+    } else {
+      return {
+        alreadyRunning: false,
+        started: false,
+        error: `Failed to start ${service.name}: ${(err as Error).message}`,
+      };
+    }
+  }
+
+  child.unref();
+  _serviceProcesses.set(service.name, child);
+
+  let stderr = '';
+  child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+  child.on('error', (err) => {
+    console.error(`  ${service.name} error: ${err.message}`);
+  });
+
+  // If the command exits immediately, it might need deps installed
+  let exited = false;
+  let exitCode: number | null = null;
+  child.on('exit', (code) => {
+    exited = true;
+    exitCode = code;
+  });
+
+  // Give it a moment to see if it exits immediately
+  await new Promise(r => setTimeout(r, 1500));
+
+  if (exited && exitCode !== 0 && service.installCommand) {
+    console.log(`  ${service.name} exited (code ${exitCode}). Running install: ${service.installCommand}`);
+    try {
+      execSync(service.installCommand, { cwd, stdio: 'pipe', timeout: 120000 });
+    } catch {
+      return {
+        alreadyRunning: false,
+        started: false,
+        error: `Install for ${service.name} failed.\nstderr: ${stderr.substring(0, 500)}`,
+      };
+    }
+    // Retry
+    child = spawn(service.command, [], {
+      cwd,
+      shell: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
+      env: { ...process.env, ...(service.env || {}) },
+    });
+    child.unref();
+    _serviceProcesses.set(service.name, child);
+    stderr = '';
+    child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+  }
+
+  console.log(`  Waiting up to ${timeout / 1000}s for ${service.name} on :${service.port}...`);
+  const ready = await waitForServer(healthUrl, timeout);
+
+  if (!ready) {
+    try { process.kill(-child.pid!, 'SIGTERM'); } catch {}
+    _serviceProcesses.delete(service.name);
+    return {
+      alreadyRunning: false,
+      started: false,
+      error: `${service.name} did not respond at :${service.port} within ${timeout / 1000}s.\nstderr: ${stderr.substring(0, 500)}`,
+    };
+  }
+
+  console.log(`  ✓ ${service.name} ready on :${service.port}`);
+  return { alreadyRunning: false, started: true, process: child };
+}
+
+/**
+ * Ensure all services are running, respecting dependency order.
+ * Falls back to legacy single-service mode if no services[] defined.
+ */
+export async function ensureAllServicesRunning(
+  services: ServiceConfig[],
+  projectRoot: string,
+): Promise<MultiServiceResult> {
+  const results = new Map<string, ServerStartResult>();
+  const errors: string[] = [];
+
+  const tiers = topoSort(services);
+
+  for (const tier of tiers) {
+    // Start all services in this tier in parallel
+    const tierResults = await Promise.all(
+      tier.map(async (svc) => {
+        const result = await startService(svc, projectRoot);
+        return { name: svc.name, result };
+      })
+    );
+
+    for (const { name, result } of tierResults) {
+      results.set(name, result);
+      if (!result.alreadyRunning && !result.started) {
+        errors.push(result.error || `${name} failed to start`);
+      }
+    }
+
+    // If any service in this tier failed, don't start next tier
+    if (errors.length > 0) break;
+  }
+
+  return {
+    services: results,
+    allHealthy: errors.length === 0,
+    errors,
+  };
+}
+
+/**
+ * Stop all services that we started.
+ */
+export function stopAllServices(): void {
+  for (const [name, child] of _serviceProcesses) {
+    try {
+      process.kill(-child.pid!, 'SIGTERM');
+      console.log(`  ${name} stopped.`);
+    } catch {
+      // Already dead
+    }
+  }
+  _serviceProcesses.clear();
 }

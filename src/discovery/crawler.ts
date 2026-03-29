@@ -12,6 +12,7 @@ import { dirname } from 'node:path';
 import type { UicConfig, UIInventory, DiscoveredRoute, DiscoveredElement, ElementClassification } from '../config/types.js';
 import { getArtifactPaths } from '../config/loader.js';
 import { classifyElement } from './element-classifier.js';
+import { groupElements } from '../semantic/grouper.js';
 
 export interface CrawlerOptions {
   config: UicConfig;
@@ -114,7 +115,8 @@ async function crawlRoute(
     if (msg.type() === 'error') consoleErrors.push(msg.text());
   };
   const onResponse = (resp: any) => {
-    if (resp.status() >= 400 && !resp.url().includes('/auth/me')) {
+    const ignoredEndpoints = config.auth?.ignoredEndpoints || ['/auth/me'];
+    if (resp.status() >= 400 && !ignoredEndpoints.some(ep => resp.url().includes(ep))) {
       failedRequests.push({ url: resp.url(), status: resp.status(), method: resp.request().method() });
     }
   };
@@ -123,12 +125,13 @@ async function crawlRoute(
 
   try {
     const url = `${baseUrl}${routePath}`;
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 15000 });
-    await page.waitForTimeout(config.discovery.waitAfterNavigation || 1000);
+    await page.goto(url, { waitUntil: config.discovery.waitUntil || 'domcontentloaded', timeout: 10000 });
+    await page.waitForTimeout(config.discovery.waitAfterNavigation || 500);
 
     // Check for auth redirect
     const currentPath = new URL(page.url()).pathname;
-    if (currentPath !== routePath && (currentPath.startsWith('/login') || currentPath.startsWith('/signin'))) {
+    const loginPatterns = config.auth?.loginPatterns || ['/login', '/signin', '/auth'];
+    if (currentPath !== routePath && loginPatterns.some(p => currentPath.startsWith(p))) {
       notes.push(`Redirected to ${currentPath} — auth required but not authenticated`);
     }
 
@@ -138,7 +141,7 @@ async function crawlRoute(
       const screenshotName = routePath.replace(/\//g, '_').replace(/^_/, '') || 'home';
       screenshotPath = `${screenshotDir}/${screenshotName}.png`;
       mkdirSync(dirname(screenshotPath), { recursive: true });
-      await page.screenshot({ path: screenshotPath, fullPage: true });
+      await page.screenshot({ path: screenshotPath, fullPage: false });
     }
 
     // Discover elements
@@ -147,6 +150,17 @@ async function crawlRoute(
       ...el,
       classification: classifyElement(el),
     }));
+
+    // Group elements by container/proximity/ARIA (semantic interaction layer)
+    let interactionGroups;
+    try {
+      interactionGroups = await groupElements(page, elements, routePath);
+      if (interactionGroups.length > 0) {
+        notes.push(`Discovered ${interactionGroups.length} interaction group(s)`);
+      }
+    } catch {
+      // Grouping is optional — don't fail discovery if it errors
+    }
 
     const title = await page.title();
 
@@ -162,6 +176,7 @@ async function crawlRoute(
       confidence: currentPath === routePath ? 'high' : 'low',
       discoveredAt: new Date().toISOString(),
       notes,
+      interactionGroups,
     };
   } catch (e) {
     notes.push(`Error during discovery: ${(e as Error).message}`);
@@ -206,13 +221,22 @@ export async function discover(options: CrawlerOptions): Promise<UIInventory> {
   const routes: DiscoveredRoute[] = [];
   const excludeSet = new Set(config.discovery.excludeRoutes || []);
 
+  const publicRoutes = config.discovery.publicRoutes
+    || (() => {
+      const patterns = config.auth?.loginPatterns || ['/login', '/signin', '/auth'];
+      const publicKeywords = ['forgot', 'reset', 'signup', 'register'];
+      return config.discovery.seedRoutes.filter(r =>
+        patterns.some(p => r.startsWith(p)) || publicKeywords.some(kw => r.includes(kw))
+      );
+    })();
+
   for (const routePath of config.discovery.seedRoutes) {
     if (excludeSet.has(routePath)) {
       console.log(`  Skipping ${routePath} (excluded)`);
       continue;
     }
 
-    const requiresAuth = routePath !== '/login' && routePath !== '/forgot-password' && routePath !== '/reset-password';
+    const requiresAuth = !publicRoutes.includes(routePath);
     console.log(`  Crawling ${routePath}...`);
     const discovered = await crawlRoute(page, baseUrl, routePath, requiresAuth, config, paths.screenshotDir);
     routes.push(discovered);
